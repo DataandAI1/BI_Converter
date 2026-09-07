@@ -1,5 +1,6 @@
-// Row-value coercion shared by the Tableau connector (ported from Linetria connectors/util.ts). Live drivers hand back JS Dates, numeric
-// strings, and BIT integers; staging wants ISO strings, numbers, and booleans.
+// Row-value coercion shared by the Tableau connector (ported from Linetria's
+// connectors/util.ts). Live drivers hand back JS Dates, numeric strings, and BIT
+// integers; staging wants ISO strings, numbers, and booleans.
 
 import type { ExtractionPass, StagingBatch } from './staging.js';
 import { RunCancelledError } from '../errors.js';

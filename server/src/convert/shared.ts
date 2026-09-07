@@ -152,7 +152,7 @@ export interface BiBindingLite {
 
 /* ------------------------------------------------------ descriptor resolution */
 
-/** Platforms a repoint target descriptor may name — the DB platforms Linetria models. */
+/** Platforms a repoint target descriptor may name — the DB platforms the descriptor model knows. */
 export const REPOINT_PLATFORMS = [
   'databricks',
   'snowflake',
@@ -268,7 +268,7 @@ export function missingDescriptorFields(d: BiDescriptor): string[] {
 
 /* ------------------------------------------------------------- Tableau XML */
 
-/** Tableau <connection class=…> value for a Linetria platform. */
+/** Tableau <connection class=…> value for a descriptor platform. */
 export function tableauConnectionClass(platform: string): string {
   switch (platform) {
     case 'snowflake':

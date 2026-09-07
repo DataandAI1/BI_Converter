@@ -138,7 +138,7 @@ export class TableauConnector implements MetadataConnector {
 
   requiredPrivileges(): string {
     return [
-      `-- Linetria minimal-privilege setup for Tableau Server/Cloud extraction.`,
+      `-- BI_Converter minimal-privilege setup for Tableau Server/Cloud extraction.`,
       `-- 1) Enable the Metadata API for the site/server:`,
       `--    Server: tsm maintenance metadata-services enable`,
       `--    Cloud: enabled by default.`,
