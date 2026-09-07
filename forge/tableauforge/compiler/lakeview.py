@@ -51,7 +51,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from tableauforge.compiler.twb import CompileError, UnsupportedFeatureError
+from tableauforge.compiler.errors import CompileError, UnsupportedFeatureError
 from tableauforge.spec.models import (
     CalculatedField,
     Chart,

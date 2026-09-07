@@ -34,13 +34,7 @@ from tableauforge.llm.client import (
     LlmJsonError,
     estimate_prompt_tokens,
 )
-from tableauforge.llm.spec_author import SCHEMA_PLACEHOLDER, _cross_check_fields_multi
-from tableauforge.spec.dax import (
-    repair_spec_dax,
-    rewrite_unknown_dax_tables,
-    spec_dax_reference_errors,
-    spec_table_inventory,
-)
+from tableauforge.llm.field_checks import SCHEMA_PLACEHOLDER, _cross_check_fields_multi
 from tableauforge.spec.schema import (
     load_schema,
     normalize_zone_grid,
@@ -70,19 +64,12 @@ TRANSLATION_STATUSES = ("translated", "approximated", "needs_review", "skipped")
 #: Statuses whose translated formula lands in the spec as a calculated field.
 DECLARED_STATUSES = ("translated", "approximated")
 
-#: Per-target authoring contract: prompt role, translation-entry formula key,
-#: and the formula_language every declared calculated field must carry.
+#: The authoring contract: prompt role, translation-entry formula key, and the
+#: formula_language every declared calculated field must carry. Upstream this was a
+#: registry of three targets; BI_Converter converts to Databricks only (spec §4.4), so
+#: the table collapses to one entry — kept as a table because the three values are read
+#: from four call sites and belong together.
 _TARGETS: dict[str, dict[str, str]] = {
-    "tableau": {
-        "prompt": "rebuild_author",
-        "formula_key": "tableau_formula",
-        "formula_language": "tableau_calc",
-    },
-    "power_bi": {
-        "prompt": "rebuild_author_powerbi",
-        "formula_key": "dax_formula",
-        "formula_language": "dax",
-    },
     "databricks": {
         "prompt": "rebuild_author_databricks",
         "formula_key": "sql_expression",
@@ -152,7 +139,7 @@ def rebuild_schema_view() -> dict[str, Any]:
     return schema
 
 
-def render_system_prompt(target: str = "tableau") -> str:
+def render_system_prompt(target: str = "databricks") -> str:
     prompt_name = _target_contract(target)["prompt"]
     system = load_system_prompt(prompt_name)
     if SCHEMA_PLACEHOLDER not in system:
@@ -162,8 +149,7 @@ def render_system_prompt(target: str = "tableau") -> str:
     # Compact, not indent=2: pretty-printing the schema cost 8,700 chars (~2,500
     # tokens) of every single attempt, and on a capped local context window that
     # is output budget the answer never got back. Models read compact JSON
-    # Schema fine — spec_author keeps indent=2 because it authors connections
-    # from scratch and is not the call that overflows.
+    # Schema fine.
     return system.replace(
         SCHEMA_PLACEHOLDER, json.dumps(rebuild_schema_view(), separators=(",", ":"))
     )
@@ -376,26 +362,6 @@ def _reconcile_translation_calcs(
         declared.add(name)
 
 
-def _repair_powerbi_dax(spec: dict[str, Any], translation: list[Any]) -> None:
-    """Deterministically requalify DAX table references (repair-don't-retry,
-    like _coerce_envelope): local models routinely qualify columns with the
-    source's PHYSICAL table name — a Tableau hyper extract is literally named
-    'Extract' — instead of the datasource name that becomes the model table,
-    which would otherwise pass authoring and kill the build at compile-time
-    structural-lint. The translation report is rewritten with the same rule so
-    the user-facing formulas match the spec's. Unresolvable references are left
-    for spec_dax_reference_errors to feed back through the retry loop."""
-    notes = repair_spec_dax(spec)
-    if notes:
-        logger.info("rebuild DAX repair: %s", "; ".join(notes))
-    inventory = spec_table_inventory(spec)
-    for entry in translation:
-        if isinstance(entry, dict) and isinstance(entry.get("dax_formula"), str):
-            entry["dax_formula"], _ = rewrite_unknown_dax_tables(
-                entry["dax_formula"], inventory
-            )
-
-
 def _coerce_envelope(raw: Any) -> Any:
     """Deterministically repair classic model envelope mistakes before
     validation: an omitted translation (legitimate when the brief has no
@@ -464,7 +430,7 @@ def _validate_translation(
     translation: list[Any],
     brief_calcs: dict[str, dict[str, Any]],
     spec: dict[str, Any],
-    target: str = "tableau",
+    target: str = "databricks",
 ) -> list[str]:
     """The report must cover every brief calculation exactly once with an honest
     status, and declared statuses must actually be declared in the spec — as
@@ -1130,7 +1096,7 @@ def author_rebuild_spec(
     instructions: str | None,
     llm: LlmClient,
     settings: Settings,
-    target: str = "tableau",
+    target: str = "databricks",
     images: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Author {"spec", "translation", "warnings"} from a rebuild brief, retrying
@@ -1221,11 +1187,8 @@ def author_rebuild_spec(
                     _reconcile_translation_calcs(
                         spec, raw["translation"], brief_calcs, calc_ds_by_name, target
                     )
-                    if target == "power_bi":
-                        _repair_powerbi_dax(spec, raw["translation"])
                 if not errors:
-                    # Language is checked by _calc_language_errors below,
-                    # target-aware (power_bi requires dax, not tableau_calc).
+                    # Language is checked by _calc_language_errors below.
                     errors = _cross_check_fields_multi(
                         spec, fields_by_ds, roles_by_ds,
                         check_tableau_language=False,
@@ -1235,15 +1198,10 @@ def author_rebuild_spec(
                     )
                 if not errors:
                     errors = _calc_language_errors(spec, target)
-                if not errors and target == "power_bi":
-                    # Retry-visible mirror of compile-time structural-lint: an
-                    # unresolvable DAX reference must cost a retry here, not
-                    # fail the whole build after compilation.
-                    errors = spec_dax_reference_errors(spec)
                 if not errors and target == "databricks":
-                    # The same bargain for SQL: sqlglot parses every authored
-                    # expression HERE, so a bad one costs a retry instead of
-                    # failing the build at post-compile validation.
+                    # sqlglot parses every authored expression HERE, so a bad one
+                    # costs a retry instead of failing the build at post-compile
+                    # validation.
                     errors = _sql_gate_errors(spec, raw["translation"])
                 if not errors:
                     errors = _validate_translation(

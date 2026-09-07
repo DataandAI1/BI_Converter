@@ -1,0 +1,176 @@
+{
+  "datasets": [
+    {
+      "name": "71d1c12a",
+      "displayName": "orders",
+      "query": "SELECT\n  `Order Date`,\n  `Region`,\n  `Sales`,\n  `Quantity`,\n  UPPER(`Region`) AS `Region Label`\nFROM `main`.`analytics`.`orders`"
+    },
+    {
+      "name": "5c089dc9",
+      "displayName": "events",
+      "query": "SELECT\n  `Channel`,\n  `Events`\nFROM `main`.`analytics`.`events`"
+    }
+  ],
+  "pages": [
+    {
+      "name": "870865c9",
+      "displayName": "Revenue Overview",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "60a99066",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "71d1c12a",
+                  "fields": [
+                    {
+                      "name": "Total Sales",
+                      "expression": "SUM(`Sales`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "Total Sales",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Sales"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 4,
+            "height": 10
+          }
+        },
+        {
+          "widget": {
+            "name": "27d35fbe",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "71d1c12a",
+                  "fields": [
+                    {
+                      "name": "Region",
+                      "expression": "`Region`"
+                    },
+                    {
+                      "name": "sum(Sales)",
+                      "expression": "SUM(`Sales`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "Region",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Sales)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Sales by Region"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 34
+          }
+        }
+      ]
+    },
+    {
+      "name": "d3f4c993",
+      "displayName": "Events by Channel",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "0803fe9e",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5c089dc9",
+                  "fields": [
+                    {
+                      "name": "sum(Events)",
+                      "expression": "SUM(`Events`)"
+                    },
+                    {
+                      "name": "Channel",
+                      "expression": "`Channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(Events)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "Channel",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Events by Channel"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 48
+          }
+        }
+      ]
+    }
+  ]
+}

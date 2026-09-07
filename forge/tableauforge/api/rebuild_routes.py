@@ -1,9 +1,7 @@
-"""Rebuild API routes (Linetria addition — see forge/UPSTREAM.md and Linetria's
-docs/specs/2026-07-22-build-tab-tableauforge.md §5.3): /draft-rebuild-spec and
-/generate-rebuild.
+"""Rebuild API routes: /draft-rebuild-spec and /generate-rebuild.
 
-Router-factory design mirrors db_routes: ``build_rebuild_router(store,
-settings)`` returns an APIRouter for ``api.main`` to mount.
+Router-factory design: ``build_rebuild_router(store, settings)`` returns an APIRouter for
+``api.main`` to mount.
 
 Statelessness contract: forge keeps nothing between draft and build, so
 /generate-rebuild accepts optional ``translation`` / ``llm_usage`` passthrough
@@ -24,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from tableauforge.api.store import ArtifactStore
 from tableauforge.config import MissingApiKeyError, OllamaUnavailableError, Settings
-from tableauforge.generator import GenerationFailed, generate_rebuild
+from tableauforge.rebuild import GenerationFailed, generate_rebuild
 from tableauforge.llm.usage import merge_usage
 
 try:  # same guarded import as api.main (do NOT import from there — circular)
@@ -35,13 +33,9 @@ except ImportError:  # pragma: no cover - anthropic is a main dependency
     ANTHROPIC_API_ERRORS = ()
 
 
-#: Build target -> the artifact kind the store rows carry. One map instead of a
-#: chain of ternaries, so a new target cannot land a row under the wrong kind.
-_ARTIFACT_KIND_FOR_TARGET: dict[str, str] = {
-    "tableau": "twb",
-    "power_bi": "pbit",
-    "databricks": "lvdash",
-}
+#: The artifact kind every store row carries. BI_Converter emits one format
+#: (spec §4.4), so this is a constant rather than the per-target map it was.
+_ARTIFACT_KIND = "lvdash"
 
 #: Vision-input caps (Task B3 spec 2026-07-27): a rebuild request may attach a
 #: handful of captured dashboard screenshots as authoring context.
@@ -80,7 +74,6 @@ class DraftRebuildBody(BaseModel):
     brief: dict[str, Any]
     workbook_name: Optional[str] = None
     instructions: Optional[str] = None
-    target: Literal["tableau", "power_bi", "databricks"] = "tableau"
     images: Optional[list[RebuildImage]] = None
 
 
@@ -130,7 +123,7 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
                 instructions=body.instructions,
                 llm=llm,
                 settings=Settings.from_env(),
-                target=body.target,
+                target="databricks",
                 images=[i.model_dump() for i in body.images or []] or None,
             )
         except OllamaUnavailableError as exc:
@@ -144,6 +137,11 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
                 status_code=422,
                 content={"detail": "rebuild authoring failed", "errors": exc.errors},
             )
+        except ValueError as exc:
+            # A brief the author cannot work with (no datasources, no elements) is a bad
+            # request, not a server fault — /generate-rebuild already says so, and a
+            # caller that gets a 500 here has no way to tell which of the two it was.
+            raise HTTPException(status_code=422, detail=str(exc))
         return {
             "spec": authored["spec"],
             "translation": authored["translation"],
@@ -170,7 +168,6 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
                     spec=body.spec_json,
                     workbook_name=body.workbook_name,
                     instructions=body.instructions,
-                    target=body.target,
                     images=[i.model_dump() for i in body.images or []] or None,
                 )
             except OllamaUnavailableError as exc:
@@ -196,7 +193,7 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
                         "report": report.to_dict() if report is not None else None,
                     },
                 )
-            artifact_src = Path(result.artifact_path or result.twb_path)
+            artifact_src = Path(result.artifact_path)
             dest_dir = store.artifacts_dir / result.artifact_id
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / artifact_src.name
@@ -213,7 +210,7 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
             artifact_id=result.artifact_id,
             workbook_name=body.workbook_name
             or result.spec.get("workbook", {}).get("name", artifact_src.stem),
-            kind=_ARTIFACT_KIND_FOR_TARGET[body.target],
+            kind=_ARTIFACT_KIND,
             path=str(dest),
             spec=result.spec,
             report=report_dict,
@@ -226,18 +223,16 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
             "translation": final_translation,
             "download_url": f"/download/{result.artifact_id}",
             "llm_usage": llm_usage,
-            "polish": getattr(result, "polish_log", None),
             "field_resolutions": getattr(result, "field_resolutions", []),
-            # Compile-time caveats (import-mode fallback, composite sources)
-            # surface to the caller, not just the server log. `warnings` is
-            # review-worthy only — the caller flips a run to needs-review on it —
-            # while `notes` is informational (a non-Databricks source, a
-            # re-flowed layout): true, printed, never a reason to re-check.
+            # Compile-time caveats surface to the caller, not just the server log.
+            # `warnings` is review-worthy only — the caller flips a run to
+            # needs-review on it — while `notes` is informational (a non-Databricks
+            # source, a re-flowed layout): true, printed, never a reason to re-check.
             "warnings": getattr(result, "compile_warnings", []) or [],
             "notes": getattr(result, "compile_notes", []) or [],
-            # Non-empty only when the target had to split the report across
-            # several documents (databricks: >15 pages). The download is then a
-            # zip of these; the list is what lets a caller name them.
+            # Non-empty only when the report had to split across several documents
+            # (>15 pages). The download is then a zip of these; the list is what
+            # lets a caller name them.
             "parts": getattr(result, "artifact_parts", []) or [],
         }
 

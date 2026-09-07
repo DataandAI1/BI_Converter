@@ -4,3 +4,6 @@ dist/
 *.log
 .env
 *.sqlite
+forge/artifacts/
+__pycache__/
+.pytest_cache/
