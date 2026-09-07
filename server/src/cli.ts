@@ -1,44 +1,51 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { parseTableauFile } from './tableau/files.js';
-import { mapTableauDocs } from './tableau/mapper.js';
-import { sniffBiFileKind } from './tableau/uploads.js';
-import { ingestStagingBatches } from './ingest/adapter.js';
 import { parseMappingFile, type SourceMapping } from './bind/resolve.js';
-import { convertToLakeviewPack, zipPack } from './convert/convert.js';
+import { assembleBriefs, convertDeterministic, parseSource } from './convert/pipeline.js';
+import { zipPack } from './convert/convert.js';
+import { ForgeClient } from './forge/client.js';
+import { Runner, runNeedsReview } from './forge/runner.js';
+import { RunStore, type ArtifactKind } from './store/store.js';
 
 /**
  * `bi-converter` (spec §8.1). Three commands: convert a workbook into a pack, deploy a
  * pack to a workspace, and serve the web UI.
  *
- * `convert --no-llm` is the whole deterministic lane: no API key, no running forge, no
- * database, no network. That is deliberate — it is both the fallback when the forge is
- * down and the golden-file baseline the LLM lane is diffed against.
+ * `--no-llm` selects the deterministic lane: no API key, no running forge, no database,
+ * no network. That is deliberate — it is both the fallback when the forge is down and the
+ * golden-file baseline the LLM lane is diffed against.
  */
 
 const USAGE = `bi-converter — Tableau to Databricks AI/BI
 
-  bi-converter convert <file.twb|.twbx|.tds|.tdsx> --out <dir> [options]
+  bi-converter convert <file.twb|.twbx|.tds|.tdsx> [options]
   bi-converter convert --tableau-server <url> --site <site> --workbook <name> [options]
   bi-converter deploy <pack-dir> --host <url> --warehouse-id <id> [options]
+  bi-converter runs [--limit 20]
   bi-converter serve [--port 4123]
 
 convert options
   --out <dir>          write the pack here (default: ./pack)
-  --zip                also write <out>.zip
   --no-llm             deterministic lane only; no forge, no API key
   --mapping <file>     YAML mapping of Tableau references to Unity Catalog names
   --name <name>        pack name (default: the source filename)
+  --zip                also write <out>.zip
+  --forge <url>        forge base URL (default: $FORGE_URL or http://127.0.0.1:4126)
+  --instructions <s>   extra authoring guidance for the LLM lane
 
 deploy options
   --host <url>         workspace URL, or DATABRICKS_HOST
   --warehouse-id <id>  SQL warehouse backing the dashboards' datasets
   --parent-path <p>    workspace folder for the dashboards
   --publish            publish each dashboard after creating its draft
+  --run <id>           deploy the pack a previous run produced, instead of a directory
 
 Auth for deploy comes from the environment: DATABRICKS_TOKEN, or the OAuth M2M pair
 DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET. No credential is ever written into a pack.
+
+State lives in $BI_CONVERTER_HOME (default: ~/.bi-converter).
 `;
 
 interface Args {
@@ -80,6 +87,14 @@ function str(flags: Args['flags'], name: string): string | undefined {
 
 class UsageError extends Error {}
 
+function stateDir(): string {
+  return process.env.BI_CONVERTER_HOME ?? path.join(os.homedir(), '.bi-converter');
+}
+
+function forgeUrl(args: Args): string {
+  return str(args.flags, 'forge') ?? process.env.FORGE_URL ?? 'http://127.0.0.1:4126';
+}
+
 /* ------------------------------------------------------------------- convert */
 
 async function loadMapping(file: string | undefined): Promise<SourceMapping | undefined> {
@@ -92,54 +107,6 @@ async function loadMapping(file: string | undefined): Promise<SourceMapping | un
   }
 }
 
-async function cmdConvert(args: Args): Promise<number> {
-  const source = args.positional[0];
-  if (str(args.flags, 'tableau-server')) {
-    // Phase 7. Failing loudly beats half-doing it: a silent fall-through to file mode
-    // would look like a conversion that found nothing.
-    throw new UsageError(
-      'live Tableau Server extraction is not wired up yet — convert a downloaded ' +
-        '.twb/.twbx/.tds/.tdsx file instead',
-    );
-  }
-  if (!source) throw new UsageError('convert needs a Tableau file, or --tableau-server');
-  if (args.flags.get('no-llm') !== true) {
-    throw new UsageError(
-      'the LLM lane is not wired up yet — pass --no-llm to run the deterministic lane',
-    );
-  }
-
-  const outDir = str(args.flags, 'out') ?? 'pack';
-  const mapping = await loadMapping(str(args.flags, 'mapping'));
-  const data = await fs.readFile(source);
-  const base = path.basename(source);
-  const name = str(args.flags, 'name') ?? base.replace(/\.[^.]+$/, '');
-
-  const kind = sniffBiFileKind(base, data);
-  if (kind === 'unknown') {
-    throw new UsageError(`'${source}' is not a Tableau workbook or datasource file`);
-  }
-
-  const docs = parseTableauFile(base, data);
-  const ingest = ingestStagingBatches(mapTableauDocs(docs, 'file'), { systemName: name });
-  const result = convertToLakeviewPack(ingest, { sourceName: name, mapping });
-
-  await writePack(outDir, result.files);
-  if (args.flags.get('zip') === true) {
-    await fs.writeFile(`${outDir}.zip`, zipPack(result.files));
-  }
-
-  const { counts } = result.manifest;
-  process.stdout.write(
-    `Converted ${name}: ${counts.total} objects (${counts.ready} ready, ` +
-      `${counts.needs_review} need review, ${counts.skipped} skipped), ` +
-      `${result.files.size} files -> ${outDir}\n`,
-  );
-  for (const w of result.warnings) process.stderr.write(`warning: ${w}\n`);
-  // Needing review is the honest outcome, not a failure — the checklist is a deliverable.
-  return 0;
-}
-
 async function writePack(outDir: string, files: ReadonlyMap<string, string>): Promise<void> {
   for (const [rel, content] of files) {
     const target = path.join(outDir, rel);
@@ -148,11 +115,179 @@ async function writePack(outDir: string, files: ReadonlyMap<string, string>): Pr
   }
 }
 
+/** What kind of artifact a pack file is, for the store's artifact rows. */
+function artifactKind(rel: string): ArtifactKind {
+  if (rel.endsWith('.lvdash.json')) return 'lvdash';
+  if (rel.endsWith('rebuild_checklist.md')) return 'checklist';
+  if (rel.includes('/views/') || rel.includes('/metric_views/') || rel.startsWith('semantic_layer/')) {
+    return 'semantic_layer';
+  }
+  return 'pack';
+}
+
+async function cmdConvert(args: Args): Promise<number> {
+  if (str(args.flags, 'tableau-server')) {
+    // Phase 7. Failing loudly beats half-doing it: a silent fall-through to file mode
+    // would look like a conversion that found nothing.
+    throw new UsageError(
+      'live Tableau Server extraction is not wired up yet — convert a downloaded ' +
+        '.twb/.twbx/.tds/.tdsx file instead',
+    );
+  }
+  const source = args.positional[0];
+  if (!source) throw new UsageError('convert needs a Tableau file, or --tableau-server');
+
+  const outDir = str(args.flags, 'out') ?? 'pack';
+  const mapping = await loadMapping(str(args.flags, 'mapping'));
+  const data = await fs.readFile(source);
+  const name = str(args.flags, 'name') ?? path.basename(source).replace(/\.[^.]+$/, '');
+  const deterministic = args.flags.get('no-llm') === true;
+
+  let parsed;
+  try {
+    parsed = parseSource(source, data, name);
+  } catch (err) {
+    throw new UsageError(err instanceof Error ? err.message : String(err));
+  }
+
+  const store = new RunStore(stateDir());
+  try {
+    const run = store.createRun({
+      sourceKind: 'file',
+      workbookName: name,
+      lane: deterministic ? 'deterministic' : 'llm',
+    });
+
+    if (deterministic) {
+      store.updateRun(run.id, { status: 'compiling' });
+      const result = convertDeterministic(parsed, { mapping });
+      await writePack(outDir, result.files);
+      for (const [rel, content] of result.files) {
+        store.addArtifact(
+          run.id,
+          path.join(outDir, rel),
+          artifactKind(rel),
+          Buffer.byteLength(content, 'utf8'),
+        );
+      }
+      if (args.flags.get('zip') === true) await fs.writeFile(`${outDir}.zip`, zipPack(result.files));
+      store.updateRun(run.id, { status: 'succeeded', warnings: result.warnings });
+
+      const { counts } = result.manifest;
+      process.stdout.write(
+        `Converted ${name} (run ${run.id}): ${counts.total} objects ` +
+          `(${counts.ready} ready, ${counts.needs_review} need review, ${counts.skipped} skipped), ` +
+          `${result.files.size} files -> ${outDir}\n`,
+      );
+      for (const w of result.warnings) process.stderr.write(`warning: ${w}\n`);
+      // Needing review is the honest outcome, not a failure — the checklist is a deliverable.
+      return 0;
+    }
+
+    // ---- LLM lane. The deterministic pack is written FIRST and always: it costs nothing,
+    // it is the diff baseline for what the model returns, and it means a forge that never
+    // answers still leaves the user with a working conversion rather than an empty
+    // directory.
+    const baseline = convertDeterministic(parsed, { mapping });
+    await writePack(outDir, baseline.files);
+
+    const { briefs, warnings } = assembleBriefs(parsed, { mapping });
+    if (briefs.length === 0) {
+      throw new UsageError(`no Tableau report container found in '${source}'`);
+    }
+    store.updateRun(run.id, { warnings });
+
+    const forge = new ForgeClient(forgeUrl(args));
+    const health = await forge.health();
+    if (!health.ok) {
+      process.stderr.write(
+        `error: the forge is not reachable at ${forgeUrl(args)} — start it with ` +
+          `\`npm run dev:forge\`, or re-run with --no-llm.\n` +
+          `The deterministic pack was written to ${outDir} regardless.\n`,
+      );
+      store.updateRun(run.id, { status: 'failed', error: 'forge unreachable' });
+      return 3;
+    }
+
+    const runner = new Runner({ store, forge });
+    // One brief per container; the first is the workbook the run is named for.
+    runner.enqueue({
+      runId: run.id,
+      brief: briefs[0].brief,
+      instructions: str(args.flags, 'instructions'),
+    });
+    await runner.settled();
+
+    const finished = store.getRun(run.id)!;
+    if (finished.status !== 'succeeded') {
+      process.stderr.write(`error: run ${run.id} ${finished.status}: ${finished.error ?? ''}\n`);
+      process.stderr.write(`The deterministic pack is still in ${outDir}.\n`);
+      return 1;
+    }
+
+    // The authored dashboard replaces the deterministic one; everything else in the pack —
+    // the semantic layer, the checklist, the deploy artifacts — is deterministic either way.
+    const artifactDir = path.join(outDir, 'authored');
+    await fs.mkdir(artifactDir, { recursive: true });
+    await fs.writeFile(
+      path.join(artifactDir, 'spec.json'),
+      `${JSON.stringify(JSON.parse(finished.spec ?? 'null'), null, 2)}\n`,
+      'utf8',
+    );
+    if (finished.translation) {
+      await fs.writeFile(
+        path.join(artifactDir, 'translation.json'),
+        `${JSON.stringify(JSON.parse(finished.translation), null, 2)}\n`,
+        'utf8',
+      );
+    }
+
+    process.stdout.write(
+      `Converted ${name} through the LLM lane (run ${run.id}) -> ${outDir}\n` +
+        `Authored spec and translation report in ${artifactDir}; ` +
+        `deterministic baseline alongside it.\n`,
+    );
+    if (runNeedsReview(finished)) {
+      process.stdout.write('This run needs review — see the checklist and the warnings below.\n');
+    }
+    for (const w of JSON.parse(finished.warnings ?? '[]') as string[]) {
+      process.stderr.write(`warning: ${w}\n`);
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+/* ---------------------------------------------------------------------- runs */
+
+function cmdRuns(args: Args): number {
+  const store = new RunStore(stateDir());
+  try {
+    const limit = Number(str(args.flags, 'limit') ?? 20);
+    const rows = store.listRuns(Number.isFinite(limit) ? limit : 20);
+    if (rows.length === 0) {
+      process.stdout.write('No runs yet.\n');
+      return 0;
+    }
+    for (const r of rows) {
+      const review = runNeedsReview(r) ? ' needs-review' : '';
+      process.stdout.write(
+        `${r.id}  ${r.created_at}  ${r.lane.padEnd(13)} ${r.status.padEnd(10)} ` +
+          `${r.workbook_name}${review}\n`,
+      );
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 /* -------------------------------------------------------------------- deploy */
 
 async function cmdDeploy(_args: Args): Promise<number> {
   throw new UsageError(
-    'deploy is not wired up yet — run the pack\'s own deploy_dashboards.py in the meantime',
+    "deploy is not wired up yet — run the pack's own deploy_dashboards.py in the meantime",
   );
 }
 
@@ -168,14 +303,18 @@ export async function main(argv: readonly string[]): Promise<number> {
     switch (args.command) {
       case 'convert':
         return await cmdConvert(args);
+      case 'runs':
+        return cmdRuns(args);
       case 'deploy':
         return await cmdDeploy(args);
       case 'serve':
         return await cmdServe(args);
       case 'help':
+        process.stdout.write(USAGE);
+        return 0;
       case undefined:
         process.stdout.write(USAGE);
-        return args.command === undefined ? 1 : 0;
+        return 1;
       default:
         process.stderr.write(`unknown command '${args.command}'\n\n${USAGE}`);
         return 1;
