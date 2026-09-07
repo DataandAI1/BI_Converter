@@ -104,20 +104,37 @@ def main() -> int:
     for base in base_names.values():
         name_counts[base] = name_counts.get(base, 0) + 1
 
+    # Qualify colliding titles with their pack folder.
+    qualified = {}
     for path in files:
-        doc = docs[path]
         base = base_names[path]
         if name_counts[base] > 1:
             group_dir = os.path.dirname(os.path.dirname(path))
             if os.path.abspath(group_dir) == os.path.abspath(args.pack_root):
-                # Flat layout (a forge build pack's workbooks/<file>): there is no pack
-                # folder to qualify with, so the unique file stem disambiguates instead.
+                # Flat layout (workbooks/<file> at the pack root): there is no pack folder
+                # to qualify with, so the unique file stem disambiguates instead.
                 group = os.path.basename(path)[: -len('.lvdash.json')]
             else:
                 group = os.path.basename(group_dir)
-            display_name = f'{base} ({group})'
+            qualified[path] = f'{base} ({group})'
         else:
-            display_name = base
+            qualified[path] = base
+
+    # Qualifying by folder is not always enough: two dashboards in the SAME workbook
+    # folder that share a page title qualify to the same name and would still race for
+    # it, the second silently overwriting the first. The file stem is unique by
+    # construction, so anything still colliding falls back to it.
+    qualified_counts = {}
+    for name in qualified.values():
+        qualified_counts[name] = qualified_counts.get(name, 0) + 1
+
+    for path in files:
+        doc = docs[path]
+        base = base_names[path]
+        display_name = qualified[path]
+        if qualified_counts[display_name] > 1:
+            stem = os.path.basename(path)[: -len('.lvdash.json')]
+            display_name = f'{base} ({stem})'
         serialized = json.dumps(doc)
 
         current = known.get(display_name)

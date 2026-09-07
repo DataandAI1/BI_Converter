@@ -15,6 +15,13 @@ targets. BI_Converter keeps 7 (spec §4.3):
 
 The forge stays STATELESS with respect to conversion: the shell round-trips the brief,
 spec, and translation report between calls. Only artifacts are held, in ArtifactStore.
+
+Importing this module has NO side effects: there is deliberately no module-level ``app``.
+``create_app`` reads the persisted settings file and exports the provider/model it finds
+into the environment, so building an app at import time would let a developer's local
+configuration reach every test in the process. Run it as a factory instead:
+
+    uvicorn tableauforge.api.main:create_app --factory --port 4126
 """
 
 from __future__ import annotations
@@ -363,6 +370,3 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(build_rebuild_router(store, settings))
     return app
 
-
-#: Module-level app for `uvicorn tableauforge.api.main:app`.
-app = create_app()

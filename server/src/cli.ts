@@ -8,6 +8,8 @@ import { zipPack } from './convert/convert.js';
 import { ForgeClient } from './forge/client.js';
 import { Runner, runNeedsReview } from './forge/runner.js';
 import { RunStore, type ArtifactKind } from './store/store.js';
+import { authFromEnv, LakeviewClient } from './deploy/lakeview-client.js';
+import { deployPack } from './deploy/deploy.js';
 
 /**
  * `bi-converter` (spec §8.1). Three commands: convert a workbook into a pack, deploy a
@@ -285,10 +287,53 @@ function cmdRuns(args: Args): number {
 
 /* -------------------------------------------------------------------- deploy */
 
-async function cmdDeploy(_args: Args): Promise<number> {
-  throw new UsageError(
-    "deploy is not wired up yet — run the pack's own deploy_dashboards.py in the meantime",
+async function cmdDeploy(args: Args): Promise<number> {
+  const warehouseId = str(args.flags, 'warehouse-id');
+  if (!warehouseId) throw new UsageError('deploy needs --warehouse-id');
+
+  // A pack directory, or the pack a previous run produced.
+  let packRoot = args.positional[0];
+  const runId = str(args.flags, 'run');
+  if (runId) {
+    const store = new RunStore(stateDir());
+    try {
+      const run = store.getRun(runId);
+      if (!run) throw new UsageError(`no run '${runId}' — list them with \`bi-converter runs\``);
+      const artifacts = store.listArtifacts(runId);
+      if (artifacts.length === 0) throw new UsageError(`run '${runId}' produced no artifacts`);
+      // Every artifact path is inside the pack; the shallowest common directory is it.
+      packRoot = artifacts
+        .map((a) => path.dirname(a.path))
+        .reduce((a, b) => (a.split(path.sep).length <= b.split(path.sep).length ? a : b));
+    } finally {
+      store.close();
+    }
+  }
+  if (!packRoot) throw new UsageError('deploy needs a pack directory, or --run <id>');
+
+  let auth;
+  try {
+    auth = authFromEnv({ host: str(args.flags, 'host') });
+  } catch (err) {
+    throw new UsageError(err instanceof Error ? err.message : String(err));
+  }
+
+  const deployed = await deployPack(new LakeviewClient(auth), packRoot, {
+    warehouseId,
+    parentPath: str(args.flags, 'parent-path'),
+    publish: args.flags.get('publish') === true,
+    onProgress: (line) => process.stdout.write(`${line}
+`),
+  });
+
+  const created = deployed.filter((d) => d.action === 'created').length;
+  process.stdout.write(
+    `Deployed ${deployed.length} dashboard(s) to ${auth.host}: ` +
+      `${created} created, ${deployed.length - created} updated` +
+      `${deployed.some((d) => d.published) ? ', all published' : ''}.
+`,
   );
+  return 0;
 }
 
 async function cmdServe(_args: Args): Promise<number> {
