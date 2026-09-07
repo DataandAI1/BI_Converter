@@ -36,7 +36,9 @@ const USAGE = `bi-converter — Tableau to Databricks AI/BI
 
 convert options
   --out <dir>          write the pack here (default: ./pack)
-  --no-llm             deterministic lane only; no forge, no API key
+  --no-llm             force the deterministic lane; no forge, no API key
+  --llm                force the AI-authored lane; fails if the forge is down
+                       (with neither, the lane follows what is available)
   --mapping <file>     YAML mapping of Tableau references to Unity Catalog names
   --name <name>        pack name (default: the source filename)
   --zip                also write <out>.zip
@@ -150,7 +152,16 @@ async function cmdConvert(args: Args): Promise<number> {
 
   const outDir = str(args.flags, 'out') ?? 'pack';
   const mapping = await loadMapping(str(args.flags, 'mapping'));
-  const deterministic = args.flags.get('no-llm') === true;
+  // Lane selection (spec §8.1 + success criterion 1). `--no-llm` forces the deterministic
+  // lane and `--llm` forces the AI-authored one; with neither, the lane follows what is
+  // actually available. That is what makes the bare `convert` command work with no
+  // credentials and no network — and the run always says which lane produced the pack, so
+  // the convenience never costs the user knowing what they got.
+  const forcedDeterministic = args.flags.get('no-llm') === true;
+  const forcedLlm = args.flags.get('llm') === true;
+  if (forcedDeterministic && forcedLlm) {
+    throw new UsageError('--llm and --no-llm contradict each other');
+  }
 
   let parsed;
   let name: string;
@@ -190,6 +201,22 @@ async function cmdConvert(args: Args): Promise<number> {
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
 
+  let deterministic = forcedDeterministic;
+  let fellBack = false;
+  if (!forcedDeterministic) {
+    const reachable = (await new ForgeClient(forgeUrl(args)).health()).ok;
+    if (!reachable) {
+      if (forcedLlm) {
+        throw new UsageError(
+          `--llm needs the forge, and it is not reachable at ${forgeUrl(args)} — start it ` +
+            'with `npm run dev:forge`, or drop --llm to convert deterministically',
+        );
+      }
+      deterministic = true;
+      fellBack = true;
+    }
+  }
+
   const store = new RunStore(stateDir());
   try {
     const run = store.createRun({
@@ -214,6 +241,14 @@ async function cmdConvert(args: Args): Promise<number> {
       store.updateRun(run.id, { status: 'succeeded', warnings: result.warnings });
 
       const { counts } = result.manifest;
+      if (fellBack) {
+        process.stdout.write(
+          `The forge is not running at ${forgeUrl(args)}, so this ran the deterministic ` +
+            `lane. Pass --no-llm to make that explicit, or start the forge for AI-authored ` +
+            `layout.
+`,
+        );
+      }
       process.stdout.write(
         `Converted ${name} (run ${run.id}): ${counts.total} objects ` +
           `(${counts.ready} ready, ${counts.needs_review} need review, ${counts.skipped} skipped), ` +
