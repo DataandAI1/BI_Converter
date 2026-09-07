@@ -61,7 +61,7 @@ import {
 /**
  * Databricks AI/BI rebuild target — Phase 3 (plan 2026-08-10): the "dashboard lane" of
  * the pack, the counterpart to `semantic-layer.ts`'s data lane and the same role in the
- * dispatcher that `rebuild-tableau.ts`'s `emitPowerBiGroupAsTableau` plays for the
+ * dispatcher role for the
  * Power BI → Tableau direction. Per Tableau workbook group this emits one deterministic
  * `.lvdash.json` per dashboard (datasets over the semantic layer's views, widgets mapped
  * from the captured `platform_properties.visual`, positions from the captured
@@ -79,7 +79,7 @@ import {
 
 /* ------------------------------------------------------------------- context */
 
-/** Structurally the same ctx `emitPowerBiGroupAsTableau` takes (rebuild.ts builds one
+/** The emit context (convert.ts builds one
  *  object and hands it to whichever target emitter the dispatcher picked). */
 export interface LakeviewGroupContext {
   files: Map<string, string>;
@@ -854,7 +854,7 @@ interface DashboardTarget {
 /**
  * One Tableau workbook group (workbook + its dashboards/sheets/datasources) → a
  * deterministic AI/BI rebuild pack. Mutates `ctx.files`/`ctx.objects` in place, the same
- * contract `emitPowerBiGroupAsTableau` has.
+ * contract the group emitters share.
  */
 export function emitTableauGroupAsLakeview(
   ctx: LakeviewGroupContext,

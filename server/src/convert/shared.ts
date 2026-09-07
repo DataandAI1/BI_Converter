@@ -11,14 +11,11 @@ import { parsePostgresConnectionString } from '../tableau/descriptors.js';
  * (same honesty ethos as migration/scriptgen.ts).
  */
 
-/** BI platforms a rebuild pack / forge build can target; [0] is the project default.
- *  Single canonical const — migration/bi/rebuild.ts and build/forge-client.ts
- *  re-export it (this module is the lowest-level shared home, import-cycle-safe). */
-export const BI_REBUILD_TARGETS = ['power_bi', 'tableau', 'databricks'] as const;
+/** The one platform a pack targets. Upstream this was a three-entry registry; it stays a
+ *  named const because the manifest and the README both read the label from it. */
+export const BI_REBUILD_TARGETS = ['databricks'] as const;
 export type BiRebuildTarget = (typeof BI_REBUILD_TARGETS)[number];
 export const BI_REBUILD_TARGET_LABELS: Record<string, string> = {
-  power_bi: 'Power BI',
-  tableau: 'Tableau',
   databricks: 'Databricks AI/BI',
 };
 
@@ -311,7 +308,7 @@ export function mEscapeText(s: string): string {
 
 /**
  * Power Query source expression for a descriptor — the same source functions
- * connectors/powerbi/mquery.ts recognizes, emitted in reverse. Null when the
+ * an M query would name, emitted in reverse. Null when the
  * platform has no known M source function.
  */
 export function mSourceFor(d: BiDescriptor): string | null {

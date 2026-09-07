@@ -24,17 +24,14 @@ import {
  * any datasource with no matched source system (an embedded Tableau extract with no
  * live/registered database behind it).
  *
- * Standalone module (controller scope adjustment, task-1 brief): Phase 3 owns wiring
- * this into rebuild.ts's `buildBiRebuildPack`. `emitSemanticLayer`'s `ctx` intentionally
- * mirrors a *subset* of rebuild-tableau.ts's `TableauGroupContext` field names
- * (`columnsByAsset`/`derivationsByAsset`/`bindingsByAsset`) — Phase 3 can pass the exact
- * same objects it already builds for the Tableau branch without repackaging; the
- * unused fields (`files`/`objects`/`edges`/`byId`) are simply not part of this
- * function's structural contract (a report/dashboard checklist is out of scope for the
- * data lane). Unlike `emitPowerBiGroupAsTableau` (void, mutates a shared ctx in place),
- * this function is pure — it returns its files and one aggregated `Notes` for the
- * caller to fold into its own manifest bookkeeping, which is what makes it independently
- * unit-testable without a fake pool or a shared mutable pack context.
+ * `emitSemanticLayer`'s `ctx` is a *subset* of the dashboard emitter's context
+ * (`columnsByAsset`/`derivationsByAsset`/`bindingsByAsset`), so the caller passes the
+ * exact objects it already built without repackaging; the unused fields
+ * (`files`/`objects`/`edges`/`byId`) are simply not part of this function's structural
+ * contract. Unlike the dashboard emitter (which mutates a shared ctx in place), this
+ * function is pure — it returns its files and one aggregated `Notes` for the caller to
+ * fold into its own manifest bookkeeping, which is what makes it independently testable
+ * without a shared mutable pack context.
  */
 
 /** `{path, content}` file-entry shape — `BiPackFile` is not (yet) an exported type in
@@ -47,8 +44,7 @@ export interface BiPackFile {
 }
 
 /** The subset of the rebuild ctx this emitter reads. `bindingsByAsset` must be
- *  matched-first ordered per datasource (same convention rebuild.ts's `emitTable`
- *  relies on) — `bindings[0].status === 'matched'` is read as "this datasource has a
+ *  matched-first ordered per datasource — `bindings[0].status === 'matched'` is read as "this datasource has a
  *  matched source system". */
 export interface SemanticLayerContext {
   columnsByAsset: Map<string, BiColumnRow[]>;
@@ -57,7 +53,7 @@ export interface SemanticLayerContext {
 }
 
 /** One top-level BI group (workbook + its members) — the same `top`/`own`/`slug` triple
- *  `emitPowerBiGroupAsTableau` takes as separate params, collapsed into one object per
+ *  the dashboard emitter takes as separate params, collapsed into one object per
  *  the brief's `emitSemanticLayer(ctx, datasourceGroup)` contract. */
 export interface DatasourceGroup {
   top: BiAssetRow;
@@ -448,7 +444,7 @@ if __name__ == '__main__':
  * Per Tableau datasource in the group: emit its relation view(s), a metric-view YAML,
  * and — once, across the whole call — the extract-rescue script if any datasource in
  * the group has no matched source system. Pure function: notes and files are returned,
- * never mutated onto a shared pack context (unlike `emitPowerBiGroupAsTableau`).
+ * never mutated onto a shared pack context (unlike the dashboard emitter).
  *
  * `viewsByDatasource` reports, per datasource id, the view name this call ACTUALLY used
  * as the metric view's source (null when it emitted no view at all). The dashboard lane
@@ -479,7 +475,7 @@ export function emitSemanticLayer(
     if (primary?.status !== 'matched') needsRescue = true;
 
     // bi_field (lowercased, bracket-stripped) → db_column, across every retained ref —
-    // matches rebuild.ts's emitTable physicalByField convention.
+    // the physicalByField convention every emitter shares.
     const physicalByField = new Map<string, string>();
     for (const b of bindings) {
       for (const r of b.refs ?? []) {

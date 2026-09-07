@@ -1,8 +1,7 @@
 """Deterministic DashboardSpec -> Databricks AI/BI (Lakeview) `.lvdash.json` compiler.
 
 Cardinal rule (GOAL §3.1) unchanged: no LLM *creativity* enters this module — it
-renders the validated DashboardSpec only, exactly like compiler/twb.py and
-compiler/pbit.py. The authored SQL (a calculated field's ``formula``) is spec
+renders the validated DashboardSpec only. The authored SQL (a calculated field's ``formula``) is spec
 data, not free-form output: it is placed verbatim, never rewritten, and
 validate/lakeview.py parses every one of them with sqlglot.
 
@@ -158,7 +157,7 @@ _AGG_SQL: dict[str, str] = {
 }
 
 #: Databricks' default schema when a connection block carries none (mirrors
-#: compiler/pbit.py's _DEFAULT_SCHEMA entry for the same dialect).
+#: the dialect's own default schema).
 _DEFAULT_SCHEMA = "default"
 
 _WIDGET_TYPES_PATH = Path(__file__).resolve().parents[1] / "spec" / "lakeview_widget_types.json"
@@ -1410,7 +1409,7 @@ def compile_caveats(spec: DashboardSpec) -> tuple[list[str], list[str]]:
 
     Recomputes the widget plans rather than reading them off a compile, so the
     caller can surface caveats before (or without) compiling — the same contract
-    compiler/pbit.py::compile_warnings has.
+    every compile-warning pass has.
     """
     warnings: list[str] = []
     notes: list[str] = []

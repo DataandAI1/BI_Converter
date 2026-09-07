@@ -53,7 +53,7 @@ export interface TranslationEntry {
   original_formula: string;
   status: 'translated' | 'approximated' | 'needs_review' | 'skipped';
   /** Target formula: tableau_formula for 'tableau' runs, dax_formula for
-   *  'power_bi', sql_expression (Databricks SQL) for 'databricks'. Exactly one
+   *  sql_expression carries the Databricks SQL. Exactly one
    *  is populated per run — build/pack.ts picks it by the run's target. */
   tableau_formula?: string;
   dax_formula?: string;

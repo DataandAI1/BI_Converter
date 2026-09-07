@@ -16,6 +16,12 @@ from typing import Any, Callable, Optional
 
 DB_FILENAME = "forge.db"
 
+#: Artifact kinds the table ACCEPTS. BI_Converter only ever writes 'lvdash' — a split
+#: build is a `.lvdash.zip` and an unsplit one a `.lvdash.json`, and the stored filename
+#: is what tells those apart. The three upstream kinds stay in the constraint because an
+#: artifacts directory inherited from TableauForge may still hold rows of them, and a
+#: narrower CHECK would make the migration below fail on exactly the databases it exists
+#: to rescue. Accepting a historical value costs nothing; refusing it loses someone's rows.
 _ARTIFACT_KINDS = ("twb", "twbx", "pbit", "lvdash")
 
 _SCHEMA = """
@@ -82,11 +88,10 @@ class ArtifactStore:
                         f"SELECT {shared} FROM artifacts_legacy"
                     )
                     conn.execute("DROP TABLE artifacts_legacy")
-                # Migrate databases created before a target was added (Power BI,
-                # then Databricks AI/BI): SQLite cannot alter a CHECK
-                # constraint, so rebuild the table once per missing kind. The
-                # check is over the CURRENT kind list, so the next target needs
-                # only _ARTIFACT_KINDS + _SCHEMA updating, not another branch.
+                # Migrate a database created before a kind was added: SQLite cannot
+                # alter a CHECK constraint, so rebuild the table once per missing kind.
+                # The check is over the CURRENT kind list, so adding one needs only
+                # _ARTIFACT_KINDS + _SCHEMA updating, not another branch.
                 row = conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name='artifacts'"
                 ).fetchone()

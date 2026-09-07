@@ -118,7 +118,7 @@ export function forgeIdFor(name: string, used: Set<string>): string {
   return candidate;
 }
 
-/** Structural upstream-table refs (same rule as rebuild-tableau.ts). */
+/** Structural upstream-table refs: a declared table, not custom SQL. */
 const isStructuralRef = (r: BiBindingRef): boolean => r.via === 'declared' || r.via === 'm_query';
 
 interface ResolvedConnection {
@@ -127,7 +127,7 @@ interface ResolvedConnection {
   how: 'declared attribution' | 'name match' | 'sole connection';
 }
 
-/** Table → binding attribution, mirroring rebuild-tableau.ts::connectionFor. */
+/** Table → binding attribution: pair a ref with the connection that owns it. */
 export function connectionFor(
   table: string,
   bindings: BriefBindingRow[],
@@ -217,15 +217,9 @@ export function connectionBlock(
   return block;
 }
 
-/** A report container's dashboard/sheet (Tableau) or the report itself (Power BI)
- *  reduced to {id, raw name, brief element name} — the exact join key screenshot
- *  matching uses (spec 2026-07-27 visual-informed-rebuild §7): by asset id, never
- *  endsWith-fuzzy name matching. Shared by buildBrief (which already has top/members
- *  in hand) and loadElementAssets (the cached-brief runner path, which does not). */
+/** A workbook's dashboards and sheets reduced to {id, raw name, brief element name} — the
+ *  exact join key screenshot matching uses: by asset id, never endsWith-fuzzy matching. */
 function elementAssetsOf(top: BiAssetRow, members: BiAssetRow[]): ElementAssetRef[] {
-  if (top.platform === 'power_bi') {
-    return [{ id: top.id, name: top.name, briefName: top.name }];
-  }
   return members
     .filter((m) => m.asset_type === 'bi_dashboard' || m.asset_type === 'bi_sheet')
     .map((m) => ({ id: m.id, name: m.name, briefName: displayName(top, m) }));
@@ -292,7 +286,7 @@ const languageOf = (d: BriefDerivationRow): BriefCalculation['language'] => {
   return l === 'dax' || l === 'tableau_calc' || l === 'm' || l === 'sql' ? l : 'sql';
 };
 
-/** Table prefixes a measure's DAX input refs name (rebuild-tableau.ts rule). */
+/** Table prefixes a measure's input refs name. */
 const refTablesOf = (deriv: BriefDerivationRow): Set<string> => {
   const out = new Set<string>();
   for (const r of deriv.input_refs ?? []) {
@@ -313,15 +307,13 @@ export function buildBrief(inputs: BriefInputs): AssembledBrief {
   // spent three LLM calls discovering that. A source platform this lane has no
   // reader for is a failed run with a name in it, not a silent mislabel. The
   // runner turns a thrown error into a `failed` build_run carrying this message.
-  if (top.platform !== 'power_bi' && top.platform !== 'tableau') {
+  if (top.platform !== 'tableau') {
     throw new Error(
-      `BI platform '${top.platform}' cannot be rebuilt: the rebuild brief reads ` +
-        `Tableau and Power BI reports only, and a '${top.platform}' report's ` +
-        `structure would be briefed as something it is not. Rebuild targets accept ` +
-        `Tableau or Power BI sources.`,
+      `BI platform '${top.platform}' cannot be converted: the rebuild brief reads Tableau ` +
+        `reports only, and a '${top.platform}' report's structure would be briefed as ` +
+        `something it is not.`,
     );
   }
-  const platform: 'power_bi' | 'tableau' = top.platform;
   const briefNotes: string[] = [];
   const usedIds = new Set<string>();
   const byId = new Map([[top.id, top], ...members.map((m) => [m.id, m] as const)]);
@@ -400,125 +392,46 @@ export function buildBrief(inputs: BriefInputs): AssembledBrief {
       ],
     });
 
-    if (platform === 'power_bi') {
-      // Power BI model: columns are `Table[Column]`, measures `[Measure]`;
-      // one brief datasource per model table (same grain as the .tds scaffold).
-      const tables = new Map<string, BiColumnRow[]>();
-      const measures: BiColumnRow[] = [];
-      const unshaped: string[] = [];
-      for (const c of columns) {
-        const tableCol = TABLE_COLUMN_RE.exec(c.name);
-        if (tableCol) {
-          (tables.get(tableCol[1]) ?? tables.set(tableCol[1], []).get(tableCol[1])!).push(c);
-        } else if (/^\[[^\]]+\]$/.test(c.name)) {
-          measures.push(c);
-        } else {
-          unshaped.push(c.name);
-        }
-      }
-      if (unshaped.length > 0) {
-        briefNotes.push(
-          `${unshaped.length} column(s) without a Table[Column] shape were omitted: ${unshaped.slice(0, 3).join(', ')}${unshaped.length > 3 ? ', …' : ''}`,
-        );
-      }
-
-      const tableNames = [...tables.keys()];
-      const calcsByTable = new Map<string, BriefCalculation[]>();
-      const firstTable = tableNames[0];
-      for (const m of measures) {
-        const caption = fieldNameOf(m.name);
-        const deriv = derivByColumn.get(m.id) ?? derivByName.get(m.name);
-        if (!deriv) continue;
-        const refTables = refTablesOf(deriv);
-        let home: string | null = null;
-        if (tableNames.length === 1) home = tableNames[0];
-        else if (refTables.size === 1 && tables.has([...refTables][0])) home = [...refTables][0];
-        if (home) {
-          (calcsByTable.get(home) ?? calcsByTable.set(home, []).get(home)!).push(calcOf(caption, deriv));
-        } else if (firstTable) {
-          // Multi-table measures cannot live on one table honestly — they ride the
-          // first datasource flagged 'unattributed' so the translation report still
-          // covers them (spec §6: listed for Claude to place or skip).
-          (calcsByTable.get(firstTable) ?? calcsByTable.set(firstTable, []).get(firstTable)!)
-            .push(calcOf(caption, deriv, ['unattributed']));
-          briefNotes.push(
-            `calculation '${caption}' spans ${refTables.size || 'no'} table(s) — attached to '${firstTable}' as unattributed; expect needs_review`,
-          );
-        }
-      }
-      if (tableNames.length > 1) {
-        briefNotes.push(
-          `model has ${tableNames.length} tables — Power BI relationships are not captured; each becomes its own single-table datasource`,
-        );
-      }
-
-      const native = ((dsAsset.platform_properties ?? {}) as Record<string, unknown>)
-        .nativeQueries as Array<{ source?: string }> | undefined;
-      for (const [table, cols] of tables) {
-        const notes: string[] = [];
-        if (native?.some((q) => q.source === `table:${table}`)) {
-          notes.push(
-            `table '${table}' is fed by a native SQL query — the workbook connects to the table directly; port the query logic if needed`,
-          );
-        }
-        const sourceCols = cols.filter((c) => !(derivByColumn.has(c.id) || derivByName.has(c.name)));
-        const calcCols = cols.filter((c) => derivByColumn.has(c.id) || derivByName.has(c.name));
-        const calcs = [...(calcsByTable.get(table) ?? [])];
-        for (const c of calcCols) {
-          const deriv = derivByColumn.get(c.id) ?? derivByName.get(c.name)!;
-          calcs.push(calcOf(fieldNameOf(c.name), deriv, ['calculated_column']));
-        }
-        datasources.push({
-          id: forgeIdFor(table, usedIds),
-          name: table,
-          connection: connectionBlock(table, connectionFor(table, bindings), inputs.httpPathBySystem, notes),
-          fields: sourceCols.map(fieldOf),
-          calculations: calcs,
-          notes,
-        });
-      }
-    } else {
-      // Tableau datasource: fields/calcs at datasource grain.
-      const dsName = displayName(top, dsAsset);
-      const notes: string[] = [];
-      const sourceCols = columns.filter((c) => !(derivByColumn.has(c.id) || derivByName.has(c.name)));
-      const calcCols = columns.filter((c) => derivByColumn.has(c.id) || derivByName.has(c.name));
-      const calcs: BriefCalculation[] = calcCols.map((c) => {
-        const deriv = derivByColumn.get(c.id) ?? derivByName.get(c.name)!;
-        const props = (c.platform_properties ?? {}) as Record<string, unknown>;
-        return calcOf((props.caption as string | undefined) ?? fieldNameOf(c.name), deriv);
-      });
-      // Pair the ref with the binding that OWNS it — a federated datasource has
-      // one binding per named connection, and grafting another connection's
-      // table onto bindings[0]'s host would be silently wrong (review
-      // 2026-07-22). Multi-binding pairings are flagged for verification.
-      const withRef =
-        bindings.find((b) => (b.refs ?? []).some(isStructuralRef)) ?? null;
-      const pairedRef = withRef?.refs?.find(isStructuralRef) ?? null;
-      const resolved: ResolvedConnection | null =
-        withRef && pairedRef
-          ? {
-              binding: withRef,
-              ref: pairedRef,
-              how: bindings.length === 1 ? 'declared attribution' : 'name match',
-            }
-          : bindings.length > 0
-            ? { binding: bindings[0], ref: null, how: 'sole connection' }
-            : null;
-      if (withRef && pairedRef && bindings.length > 1) {
-        notes.push(
-          `datasource declares ${bindings.length} connections — the one carrying the declared table reference was scaffolded; model the others separately`,
-        );
-      }
-      datasources.push({
-        id: forgeIdFor(dsName, usedIds),
-        name: dsName,
-        connection: connectionBlock(dsName, resolved, inputs.httpPathBySystem, notes),
-        fields: sourceCols.map(fieldOf),
-        calculations: calcs,
-        notes,
-      });
+    // Fields and calcs at datasource grain.
+    const dsName = displayName(top, dsAsset);
+    const notes: string[] = [];
+    const sourceCols = columns.filter((c) => !(derivByColumn.has(c.id) || derivByName.has(c.name)));
+    const calcCols = columns.filter((c) => derivByColumn.has(c.id) || derivByName.has(c.name));
+    const calcs: BriefCalculation[] = calcCols.map((c) => {
+      const deriv = derivByColumn.get(c.id) ?? derivByName.get(c.name)!;
+      const props = (c.platform_properties ?? {}) as Record<string, unknown>;
+      return calcOf((props.caption as string | undefined) ?? fieldNameOf(c.name), deriv);
+    });
+    // Pair the ref with the binding that OWNS it — a federated datasource has
+    // one binding per named connection, and grafting another connection's
+    // table onto bindings[0]'s host would be silently wrong (review
+    // 2026-07-22). Multi-binding pairings are flagged for verification.
+    const withRef =
+      bindings.find((b) => (b.refs ?? []).some(isStructuralRef)) ?? null;
+    const pairedRef = withRef?.refs?.find(isStructuralRef) ?? null;
+    const resolved: ResolvedConnection | null =
+      withRef && pairedRef
+        ? {
+            binding: withRef,
+            ref: pairedRef,
+            how: bindings.length === 1 ? 'declared attribution' : 'name match',
+          }
+        : bindings.length > 0
+          ? { binding: bindings[0], ref: null, how: 'sole connection' }
+          : null;
+    if (withRef && pairedRef && bindings.length > 1) {
+      notes.push(
+        `datasource declares ${bindings.length} connections — the one carrying the declared table reference was scaffolded; model the others separately`,
+      );
     }
+    datasources.push({
+      id: forgeIdFor(dsName, usedIds),
+      name: dsName,
+      connection: connectionBlock(dsName, resolved, inputs.httpPathBySystem, notes),
+      fields: sourceCols.map(fieldOf),
+      calculations: calcs,
+      notes,
+    });
   }
 
   /* forge structural caps (schema: 1–8 datasources, 1–256 fields each) — enforced
@@ -605,50 +518,30 @@ export function buildBrief(inputs: BriefInputs): AssembledBrief {
     ),
   ];
 
-  if (platform === 'tableau') {
-    const els = members.filter(
-      (m) => m.asset_type === 'bi_dashboard' || m.asset_type === 'bi_sheet',
-    );
-    const translateOne = (n: string): string =>
-      briefNameByBiField.get(fieldNameOf(n).toLowerCase()) ?? fieldNameOf(n);
-    for (const el of els) {
-      const used = edges
-        .filter((e) => e.from_asset_id === el.id && e.to_column_name)
-        .map((e) => e.to_column_name!);
-      const element: BriefElement = {
-        name: displayName(top, el),
-        kind: el.asset_type.replace(/^bi_/, ''),
-        fields: translateFields(used),
-      };
-      const props = (el.platform_properties ?? {}) as Record<string, unknown>;
-      const vis = buildElementVisual(props, translateOne);
-      if (vis) element.visual = vis;
-      const layout = buildElementLayout(props);
-      if (layout) element.layout = layout;
-      if (inputs.screenshotAssetIds?.has(el.id)) element.screenshot_available = true;
-      elements.push(element);
-    }
-    if (elements.length === 0) {
-      reportNotes.push('no_sheets_captured');
-    }
-  } else {
-    // Power BI: exactly one report-grain element; pages are never captured and
-    // field usage is deduped across pages (or absent entirely in scan mode).
-    reportNotes.push('pages_not_captured');
-    const used = new Set<string>();
-    const reportIds = new Set(
-      [top, ...members].filter((a) => a.asset_type === 'bi_report').map((a) => a.id),
-    );
-    for (const e of edges) {
-      if (!reportIds.has(e.from_asset_id)) continue;
-      if (e.to_column_name) used.add(e.to_column_name);
-    }
-    if (used.size === 0) reportNotes.push('no_field_usage');
-    elements.push({
-      name: top.name,
-      kind: 'bi_report',
+  const els = members.filter(
+    (m) => m.asset_type === 'bi_dashboard' || m.asset_type === 'bi_sheet',
+  );
+  const translateOne = (n: string): string =>
+    briefNameByBiField.get(fieldNameOf(n).toLowerCase()) ?? fieldNameOf(n);
+  for (const el of els) {
+    const used = edges
+      .filter((e) => e.from_asset_id === el.id && e.to_column_name)
+      .map((e) => e.to_column_name!);
+    const element: BriefElement = {
+      name: displayName(top, el),
+      kind: el.asset_type.replace(/^bi_/, ''),
       fields: translateFields(used),
-    });
+    };
+    const props = (el.platform_properties ?? {}) as Record<string, unknown>;
+    const vis = buildElementVisual(props, translateOne);
+    if (vis) element.visual = vis;
+    const layout = buildElementLayout(props);
+    if (layout) element.layout = layout;
+    if (inputs.screenshotAssetIds?.has(el.id)) element.screenshot_available = true;
+    elements.push(element);
+  }
+  if (elements.length === 0) {
+    reportNotes.push('no_sheets_captured');
   }
 
   /* Brief honesty: an element may only name fields the brief actually declares.
@@ -705,7 +598,7 @@ export function buildBrief(inputs: BriefInputs): AssembledBrief {
   // either the workbook really declares none, or the extraction predates
   // parameter capture (2026-08-10) — the brief cannot tell, so it says which
   // action would settle it instead of letting the model guess at the calc.
-  if (platform === 'tableau' && !parameters) {
+  if (!parameters) {
     const unresolved = new Map<string, number>();
     for (const ds of datasources) {
       for (const c of ds.calculations) {
@@ -732,7 +625,7 @@ export function buildBrief(inputs: BriefInputs): AssembledBrief {
     brief_version: '1',
     report: {
       name: top.name,
-      platform,
+      platform: 'tableau',
       fqn: top.fqn,
       elements,
       ...(parameters ? { parameters } : {}),

@@ -1,3 +1,3 @@
-"""TableauForge: wireframes, descriptions, CSVs, and DB connections -> real .twb/.twbx files."""
+"""BI_Converter forge: LLM authoring and spec compilation for Databricks AI/BI dashboards."""
 
 __version__ = "0.1.0"

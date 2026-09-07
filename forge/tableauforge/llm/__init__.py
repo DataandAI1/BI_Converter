@@ -1,6 +1,5 @@
-"""Claude API layer (GOAL §3.2): versioned prompt files in prompts/, a thin
-Messages-API client, and the three prompt roles (wireframe analyst, data
-profiler interpreter, spec author).
+"""LLM layer: versioned prompt files in prompts/, a thin client over the Messages API (or
+a local Ollama server), and the one prompt role BI_Converter keeps — the rebuild author.
 """
 
 from __future__ import annotations

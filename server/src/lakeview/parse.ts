@@ -242,7 +242,7 @@ function toDoc(raw: RawLakeviewDashboard): LakeviewDashboardDoc {
  * `page_token` riding requestJson — the stepId itself stays stable across pages, same
  * convention as Power BI's scan-id-in-requestJson) then one `lakeview_get:<id>` per
  * dashboard. Used with `ApiDocSource` exactly like `tableauLiveStrategy`/
- * `powerBiLiveStrategy`.
+ * the live doc-source strategies.
  */
 export function lakeviewLiveStrategy(): (fetch: BiApiFetch) => AsyncGenerator<LakeviewDashboardDoc> {
   return async function* (fetch) {

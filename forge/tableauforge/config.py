@@ -210,7 +210,7 @@ def require_api_key(env: Mapping[str, str] | None = None) -> str:
     if not key:
         raise MissingApiKeyError(
             "ANTHROPIC_API_KEY is not set. It is required only for Claude API calls "
-            "(spec authoring, profile interpretation, wireframe analysis); compiling "
+            "(rebuild authoring); compiling "
             "an existing spec needs no key."
         )
     return key
