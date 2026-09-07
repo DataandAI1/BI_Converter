@@ -69,7 +69,9 @@ function ConvertScreen({
   health: Health | null;
   onStarted: (id: string) => void;
 }) {
+  const [sourceKind, setSourceKind] = useState<'file' | 'server'>('file');
   const [file, setFile] = useState<File | null>(null);
+  const [live, setLive] = useState({ server: '', site: '', patName: '', patSecret: '', workbook: '' });
   const [lane, setLane] = useState<'llm' | 'deterministic'>('deterministic');
   const [mapping, setMapping] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -83,14 +85,28 @@ function ConvertScreen({
     if (forgeDown && lane === 'llm') setLane('deterministic');
   }, [forgeDown, lane]);
 
+  const ready =
+    sourceKind === 'file' ? file != null : live.server.trim() !== '' && live.patName.trim() !== '';
+
   async function submit() {
-    if (!file) return;
+    if (!ready) return;
     setBusy(true);
     setError(null);
     try {
+      const source =
+        sourceKind === 'file'
+          ? { fileName: file!.name, data: await fileToBase64(file!) }
+          : {
+              tableauServer: live.server.trim(),
+              site: live.site.trim() || undefined,
+              patName: live.patName.trim(),
+              // Blank sends nothing, so the server falls back to its own environment
+              // rather than the browser holding a token it does not need to.
+              patSecret: live.patSecret.trim() || undefined,
+              workbook: live.workbook.trim() || undefined,
+            };
       const run = await api.convert({
-        fileName: file.name,
-        data: await fileToBase64(file),
+        ...source,
         lane,
         mapping: mapping.trim() || undefined,
         instructions: instructions.trim() || undefined,
@@ -107,10 +123,9 @@ function ConvertScreen({
     <div className="panel">
       <h2>Convert a Tableau workbook</h2>
       <p className="hint">
-        A <span className="mono">.twb</span>, <span className="mono">.twbx</span>,{' '}
-        <span className="mono">.tds</span> or <span className="mono">.tdsx</span> becomes a
-        Lakeview dashboard per Tableau dashboard, the Unity Catalog views and metric views it
-        reads from, and a checklist of what a human still has to decide.
+        A workbook — uploaded, or pulled straight from a Tableau site — becomes a Lakeview
+        dashboard per Tableau dashboard, the Unity Catalog views and metric views it reads
+        from, and a checklist of what a human still has to decide.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -123,14 +138,96 @@ function ConvertScreen({
         </div>
       )}
 
-      <label className="field">
-        <span>Workbook file</span>
-        <input
-          type="file"
-          accept=".twb,.twbx,.tds,.tdsx"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-        />
-      </label>
+      <div className="field" role="radiogroup" aria-label="Source">
+        <span className="field-label">Source</span>
+        <div className="lanes">
+          <button
+            type="button"
+            className="lane"
+            role="radio"
+            aria-checked={sourceKind === 'file'}
+            onClick={() => setSourceKind('file')}
+          >
+            <strong>A workbook file</strong>
+            <em>.twb, .twbx, .tds or .tdsx. No credentials, no network.</em>
+          </button>
+          <button
+            type="button"
+            className="lane"
+            role="radio"
+            aria-checked={sourceKind === 'server'}
+            onClick={() => setSourceKind('server')}
+          >
+            <strong>Tableau Server or Cloud</strong>
+            <em>Pull straight from a site with a personal access token.</em>
+          </button>
+        </div>
+      </div>
+
+      {sourceKind === 'file' ? (
+        <label className="field">
+          <span>Workbook file</span>
+          <input
+            type="file"
+            accept=".twb,.twbx,.tds,.tdsx"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+        </label>
+      ) : (
+        <>
+          <label className="field">
+            <span>Server URL</span>
+            <input
+              type="text"
+              value={live.server}
+              placeholder="https://10ax.online.tableau.com"
+              onChange={(e) => setLive({ ...live, server: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Site <span className="muted">(blank for the default site)</span>
+            </span>
+            <input
+              type="text"
+              value={live.site}
+              onChange={(e) => setLive({ ...live, site: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>Personal access token name</span>
+            <input
+              type="text"
+              value={live.patName}
+              onChange={(e) => setLive({ ...live, patName: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Token secret{' '}
+              <span className="muted">
+                (blank uses the server's TABLEAU_PAT_SECRET — it is used for this request
+                only and never stored)
+              </span>
+            </span>
+            <input
+              type="password"
+              value={live.patSecret}
+              onChange={(e) => setLive({ ...live, patSecret: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Workbook <span className="muted">(blank converts every workbook the token can see)</span>
+            </span>
+            <input
+              type="text"
+              value={live.workbook}
+              onChange={(e) => setLive({ ...live, workbook: e.target.value })}
+            />
+          </label>
+        </>
+      )}
 
       <div className="field" role="radiogroup" aria-label="Conversion lane">
         <span className="field-label">Lane</span>
@@ -190,7 +287,7 @@ function ConvertScreen({
         </label>
       )}
 
-      <button className="primary" disabled={!file || busy} onClick={submit}>
+      <button className="primary" disabled={!ready || busy} onClick={submit}>
         {busy ? 'Converting…' : 'Convert'}
       </button>
     </div>

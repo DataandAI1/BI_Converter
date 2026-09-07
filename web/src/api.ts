@@ -63,8 +63,13 @@ export const api = {
   health: () => fetch('/api/health').then(json<Health>),
 
   convert: (body: {
-    fileName: string;
-    data: string;
+    fileName?: string;
+    data?: string;
+    tableauServer?: string;
+    site?: string;
+    patName?: string;
+    patSecret?: string;
+    workbook?: string;
     lane: 'llm' | 'deterministic';
     mapping?: string;
     instructions?: string;

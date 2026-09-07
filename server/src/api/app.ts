@@ -6,7 +6,13 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { parseMappingFile } from '../bind/resolve.js';
-import { assembleBriefs, convertDeterministic, parseSource } from '../convert/pipeline.js';
+import {
+  assembleBriefs,
+  convertDeterministic,
+  parseLiveSource,
+  parseSource,
+  type ParsedSource,
+} from '../convert/pipeline.js';
 import { zipPack } from '../convert/convert.js';
 import { ForgeClient } from '../forge/client.js';
 import { Runner, runNeedsReview } from '../forge/runner.js';
@@ -98,31 +104,63 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
    */
   app.post<{
     Body: {
-      fileName: string;
+      /** File mode: the upload. */
+      fileName?: string;
       /** base64 workbook bytes */
-      data: string;
+      data?: string;
+      /** Live mode: the site to pull from. */
+      tableauServer?: string;
+      site?: string;
+      patName?: string;
+      patSecret?: string;
+      workbook?: string;
       lane?: 'llm' | 'deterministic';
       mapping?: string;
       name?: string;
       instructions?: string;
     };
   }>('/api/convert', async (req) => {
-    const body = req.body;
-    if (!body?.fileName || !body?.data) throw new AppError(422, 'fileName and data are required');
-
-    const bytes = Buffer.from(body.data, 'base64');
-    const name = body.name ?? path.basename(body.fileName).replace(/\.[^.]+$/, '');
+    const body = req.body ?? {};
     const mapping = body.mapping ? parseMappingFile(body.mapping) : undefined;
     const lane = body.lane ?? 'deterministic';
 
-    let parsed;
+    let parsed: ParsedSource;
+    let name: string;
+    let sourceKind: 'file' | 'tableau_server';
     try {
-      parsed = parseSource(body.fileName, bytes, name);
+      if (body.tableauServer) {
+        const patName = body.patName ?? process.env.TABLEAU_PAT_NAME;
+        const patSecret = body.patSecret ?? process.env.TABLEAU_PAT_SECRET;
+        if (!patName || !patSecret) {
+          throw new AppError(
+            422,
+            'live extraction needs a Tableau personal access token — supply one, or set ' +
+              'TABLEAU_PAT_NAME and TABLEAU_PAT_SECRET on the server',
+          );
+        }
+        parsed = await parseLiveSource({
+          serverUrl: body.tableauServer,
+          site: body.site,
+          patName,
+          patSecret,
+          workbook: body.workbook,
+        });
+        name = body.name ?? parsed.name;
+        sourceKind = 'tableau_server';
+      } else {
+        if (!body.fileName || !body.data) {
+          throw new AppError(422, 'provide a fileName and data, or a tableauServer');
+        }
+        name = body.name ?? path.basename(body.fileName).replace(/\.[^.]+$/, '');
+        parsed = parseSource(body.fileName, Buffer.from(body.data, 'base64'), name);
+        sourceKind = 'file';
+      }
     } catch (err) {
+      if (err instanceof AppError) throw err;
       throw new AppError(422, err instanceof Error ? err.message : String(err));
     }
 
-    const run = store.createRun({ sourceKind: 'file', workbookName: name, lane });
+    const run = store.createRun({ sourceKind, workbookName: name, lane });
     const outDir = path.join(packRoot, run.id);
 
     const result = convertDeterministic(parsed, { mapping });

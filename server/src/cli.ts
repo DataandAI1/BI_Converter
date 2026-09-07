@@ -3,7 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parseMappingFile, type SourceMapping } from './bind/resolve.js';
-import { assembleBriefs, convertDeterministic, parseSource } from './convert/pipeline.js';
+import {
+  assembleBriefs,
+  convertDeterministic,
+  parseLiveSource,
+  parseSource,
+} from './convert/pipeline.js';
 import { zipPack } from './convert/convert.js';
 import { ForgeClient } from './forge/client.js';
 import { Runner, runNeedsReview } from './forge/runner.js';
@@ -24,7 +29,7 @@ import { buildServer } from './api/app.js';
 const USAGE = `bi-converter — Tableau to Databricks AI/BI
 
   bi-converter convert <file.twb|.twbx|.tds|.tdsx> [options]
-  bi-converter convert --tableau-server <url> --site <site> --workbook <name> [options]
+  bi-converter convert --tableau-server <url> [--site <site>] [--workbook <name>] [options]
   bi-converter deploy <pack-dir> --host <url> --warehouse-id <id> [options]
   bi-converter runs [--limit 20]
   bi-converter serve [--port 4123]
@@ -37,6 +42,14 @@ convert options
   --zip                also write <out>.zip
   --forge <url>        forge base URL (default: $FORGE_URL or http://127.0.0.1:4126)
   --instructions <s>   extra authoring guidance for the LLM lane
+
+live extraction (--tableau-server)
+  --site <site>        site content URL; omit for the default site
+  --workbook <name>    convert one workbook; omit to convert every one visible
+  --pat-name <name>    token name, or $TABLEAU_PAT_NAME
+  --screenshots        capture rendered dashboards as authoring context
+  The token SECRET is read from $TABLEAU_PAT_SECRET only — never from an argument,
+  which would land in shell history and in every process listing on the machine.
 
 deploy options
   --host <url>         workspace URL, or DATABRICKS_HOST
@@ -129,34 +142,58 @@ function artifactKind(rel: string): ArtifactKind {
 }
 
 async function cmdConvert(args: Args): Promise<number> {
-  if (str(args.flags, 'tableau-server')) {
-    // Phase 7. Failing loudly beats half-doing it: a silent fall-through to file mode
-    // would look like a conversion that found nothing.
-    throw new UsageError(
-      'live Tableau Server extraction is not wired up yet — convert a downloaded ' +
-        '.twb/.twbx/.tds/.tdsx file instead',
-    );
-  }
+  const serverUrl = str(args.flags, 'tableau-server');
   const source = args.positional[0];
-  if (!source) throw new UsageError('convert needs a Tableau file, or --tableau-server');
+  if (!serverUrl && !source) {
+    throw new UsageError('convert needs a Tableau file, or --tableau-server');
+  }
 
   const outDir = str(args.flags, 'out') ?? 'pack';
   const mapping = await loadMapping(str(args.flags, 'mapping'));
-  const data = await fs.readFile(source);
-  const name = str(args.flags, 'name') ?? path.basename(source).replace(/\.[^.]+$/, '');
   const deterministic = args.flags.get('no-llm') === true;
 
   let parsed;
+  let name: string;
+  let sourceKind: 'file' | 'tableau_server';
   try {
-    parsed = parseSource(source, data, name);
+    if (serverUrl) {
+      // The PAT secret comes from the environment, never the command line — an argument
+      // lands in shell history and in every process listing on the machine.
+      const patName = str(args.flags, 'pat-name') ?? process.env.TABLEAU_PAT_NAME;
+      const patSecret = process.env.TABLEAU_PAT_SECRET;
+      if (!patName || !patSecret) {
+        throw new UsageError(
+          'live extraction needs a personal access token: set TABLEAU_PAT_NAME and ' +
+            'TABLEAU_PAT_SECRET (the secret is read from the environment only, never from ' +
+            'an argument)',
+        );
+      }
+      parsed = await parseLiveSource({
+        serverUrl,
+        site: str(args.flags, 'site'),
+        patName,
+        patSecret,
+        workbook: str(args.flags, 'workbook'),
+        screenshots: args.flags.get('screenshots') === true,
+        replayFixture: str(args.flags, 'replay-fixture'),
+      });
+      name = str(args.flags, 'name') ?? parsed.name;
+      sourceKind = 'tableau_server';
+    } else {
+      const data = await fs.readFile(source);
+      name = str(args.flags, 'name') ?? path.basename(source).replace(/\.[^.]+$/, '');
+      parsed = parseSource(source, data, name);
+      sourceKind = 'file';
+    }
   } catch (err) {
+    if (err instanceof UsageError) throw err;
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
 
   const store = new RunStore(stateDir());
   try {
     const run = store.createRun({
-      sourceKind: 'file',
+      sourceKind,
       workbookName: name,
       lane: deterministic ? 'deterministic' : 'llm',
     });
