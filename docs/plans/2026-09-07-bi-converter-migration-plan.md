@@ -1,5 +1,7 @@
 # BI_Converter migration plan
 
+*Status: complete. All seven phases delivered; see the commit series `Phase 1` … `Phase 7`.*
+
 Execution plan for `docs/superpowers/specs/2026-09-07-tableau-to-databricks-aibi-mvp-design.md`.
 Source of truth for ported code: `../Linetria`.
 
@@ -31,6 +33,8 @@ New code: `ingest/adapter.ts`, `bind/resolve.ts`, `store/`, `deploy/lakeview-cli
 
 ## Phases
 
+All delivered.
+
 1. **Skeleton + format ground truth** — workspaces, tsconfig, golden corpus, `lakeview/`, format tripwire + mirror tests.
 2. **Tableau in** — model, staging types, connector, files, mapper, calc, visuals, ingest adapter. Fixture test `.twbx` → `BiAssetRow[]`.
 3. **Deterministic lane out** — `convert/`, `bind/`, semantic layer, checklist, pack, `cli.ts convert --no-llm`. End-to-end.
@@ -38,3 +42,35 @@ New code: `ingest/adapter.ts`, `bind/resolve.ts`, `store/`, `deploy/lakeview-cli
 5. **Deploy** — Lakeview REST client, `cli.ts deploy`.
 6. **Web UI + run persistence.**
 7. **Live Tableau Server extraction + screenshots.**
+
+
+## Outcome
+
+| Spec §9 test | Where | Tests |
+|---|---|---|
+| Format tripwire | `lakeview-format.test.ts` | 12 |
+| Cross-language mirror | `lakeview-format-mirror.test.ts` | 6 |
+| Golden-file conversion + re-ingest | `convert-golden.test.ts` | 14 |
+| Ingest adapter | `ingest-adapter.test.ts` | 18 |
+| Binding resolver | `bind-resolve.test.ts` | 20 |
+| Tableau Metadata API | `tableau-live.test.ts` | 15 |
+| Lakeview REST | `lakeview-deploy.test.ts` | 23 |
+| Run queue | `runner.test.ts` | 19 |
+| Forge lane | `forge/tests/` | 324 |
+
+641 TypeScript tests and 324 forge tests. No test needs a credential or a network.
+
+### Departures from the plan
+
+- **`spec/precheck.py` and a trimmed `validate/pipeline.py`** — not anticipated by the
+  spec's §4.4 coupling list, but forced by the dependency graph: `precheck_field_references`
+  is spec logic living in the dropped TWB compiler, and `validate/pipeline.py` pulled lxml
+  in through the Tableau XSD layers.
+- **`tableauforge/rebuild.py`** — the Databricks branch of `generator.py`'s
+  `generate_rebuild`, which the spec dropped wholesale without noting that
+  `/generate-rebuild` depends on it.
+- **Lane selection follows availability** — success criterion 1 requires the bare `convert`
+  command to work with no network, while §8.1 lists `--no-llm` as optional. With neither
+  flag the lane follows what is reachable, and the run always says which lane ran.
+- **Default forge port 4126, not 4125** — 4125 is Linetria's forge on this machine, and
+  "the forge is up" must never mean someone else's forge.
