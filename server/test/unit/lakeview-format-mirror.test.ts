@@ -12,7 +12,7 @@ import {
 /**
  * Cross-language lockstep gate (plan 2026-08-10 Phase 5): forge's Python compiler and
  * validator read the pinned Lakeview widget table from a JSON mirror, because the
- * canonical table is TypeScript (`server/src/migration/bi/lakeview-format.ts`) and
+ * canonical table is TypeScript (`server/src/convert/lakeview-format.ts`) and
  * Python cannot import it. Two copies of a format pin drift silently — this test is the
  * mechanism that stops it: it reads the JSON file from forge's own package path and
  * deep-equals it against the TypeScript source of truth.

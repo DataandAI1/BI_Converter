@@ -1,0 +1,46 @@
+<?xml version='1.0' encoding='utf-8' ?>
+
+<workbook source-platform='win' version='18.1' xmlns:user='http://www.tableausoftware.com/xml/user'>
+  <preferences />
+  <datasources>
+    <datasource caption='Regional Sales' name='regional-sales' inline='true' version='18.1'>
+      <connection class='snowflake'>
+        <named-connections>
+          <named-connection name='snowflake.0reg789' caption='Regional Sales'>
+            <connection class='snowflake' dbname='SALES_DB' schema='PUBLIC' server='xy12345.snowflakecomputing.com' service='' warehouse='ANALYTICS_WH' username='analyst' />
+          </named-connection>
+        </named-connections>
+        <relation connection='snowflake.0reg789' name='REGIONAL_ORDERS' table='[PUBLIC].[REGIONAL_ORDERS]' type='table' />
+      </connection>
+      <column caption='Order ID' datatype='integer' name='[Order ID]' role='dimension' type='ordinal' />
+      <column caption='Sales' datatype='real' name='[Sales]' role='measure' type='quantitative' />
+      <column caption='Region' datatype='string' name='[Region]' role='dimension' type='nominal' />
+      <column caption='Profit Tier' datatype='string' name='[Calculation_10]' role='dimension' type='nominal'>
+        <calculation class='tableau' formula='IF [Sales] &gt; 500 THEN &quot;High&quot; ELSE &quot;Low&quot; END' />
+      </column>
+      <column caption='Total Sales' datatype='real' name='[Calculation_11]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='SUM( [Sales] )' />
+      </column>
+    </datasource>
+  </datasources>
+  <worksheets>
+    <worksheet name='Regional Overview'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='regional-sales'>
+            <column caption='Order ID' datatype='integer' name='[Order ID]' role='dimension' type='ordinal' />
+            <column caption='Profit Tier' datatype='string' name='[Calculation_10]' role='dimension' type='nominal' />
+            <column caption='Total Sales' datatype='real' name='[Calculation_11]' role='measure' type='quantitative' />
+          </datasource-dependencies>
+        </view>
+      </table>
+    </worksheet>
+  </worksheets>
+  <dashboards>
+    <dashboard name='Regional Dashboard'>
+      <zones>
+        <zone name='Regional Overview' type='layout-basic' />
+      </zones>
+    </dashboard>
+  </dashboards>
+</workbook>

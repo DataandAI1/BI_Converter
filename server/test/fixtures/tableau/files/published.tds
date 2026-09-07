@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='utf-8' ?>
+
+<datasource caption='Enterprise Sales' name='federated.0xyz789' version='18.1'>
+  <connection class='snowflake'>
+    <named-connections>
+      <named-connection name='snowflake.0pub111' caption='Enterprise Sales'>
+        <connection class='snowflake' dbname='SALES_DB' schema='PUBLIC' server='xy12345.snowflakecomputing.com' service='' warehouse='ANALYTICS_WH' username='analyst' />
+      </named-connection>
+    </named-connections>
+    <relation connection='snowflake.0pub111' name='REVENUE' table='[PUBLIC].[REVENUE]' type='table' />
+  </connection>
+  <column caption='Revenue ID' datatype='integer' name='[Revenue ID]' role='dimension' type='ordinal' />
+  <column caption='Amount' datatype='real' name='[Amount]' role='measure' type='quantitative' />
+  <column caption='Amount Rounded' datatype='real' name='[Calculation_1]' role='measure' type='quantitative'>
+    <calculation class='tableau' formula='ROUND([Amount])' />
+  </column>
+</datasource>

@@ -1,0 +1,92 @@
+<?xml version='1.0' encoding='utf-8' ?>
+
+<workbook source-platform='win' version='18.1' xmlns:user='http://www.tableausoftware.com/xml/user'>
+  <preferences />
+  <datasources>
+    <datasource caption='Snowflake Sales' name='snowflake-sales' inline='true' version='18.1'>
+      <connection class='snowflake'>
+        <named-connections>
+          <named-connection name='snowflake.0abc123' caption='Snowflake Sales'>
+            <connection class='snowflake' dbname='SALES_DB' schema='PUBLIC' server='xy12345.snowflakecomputing.com' service='' warehouse='ANALYTICS_WH' username='analyst' />
+          </named-connection>
+        </named-connections>
+        <relation connection='snowflake.0abc123' name='ORDERS' table='[PUBLIC].[ORDERS]' type='table' />
+      </connection>
+      <column caption='Order ID' datatype='integer' name='[Order ID]' role='dimension' type='ordinal' />
+      <column caption='Sales' datatype='real' name='[Sales]' role='measure' type='quantitative' />
+      <column caption='Cost' datatype='real' name='[Cost]' role='measure' type='quantitative' />
+      <column caption='Customer ID' datatype='string' name='[Customer ID]' role='dimension' type='nominal' />
+      <column caption='Customer Name' datatype='string' name='[Customer Name]' role='dimension' type='nominal' />
+      <column caption='Region' datatype='string' name='[Region]' role='dimension' type='nominal' />
+      <column caption='Order Date' datatype='date' name='[Order Date]' role='dimension' type='ordinal' />
+      <column caption='Profit Tier' datatype='string' name='[Calculation_1]' role='dimension' type='nominal'>
+        <calculation class='tableau' formula='IF [Sales] &gt; 100 THEN &quot;High&quot; ELSE &quot;Low&quot; END' />
+      </column>
+      <column caption='Total Sales' datatype='real' name='[Calculation_2]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='SUM([Sales])' />
+      </column>
+      <column caption='Sales by Region (Fixed)' datatype='real' name='[Calculation_3]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='{FIXED [Region] : SUM([Sales])}' />
+      </column>
+      <column caption='Order Date Plus 30' datatype='date' name='[Calculation_4]' role='dimension' type='ordinal'>
+        <calculation class='tableau' formula='DATEADD(&apos;day&apos;, 30, [Order Date])' />
+      </column>
+      <column caption='Customer Prefix' datatype='string' name='[Calculation_5]' role='dimension' type='nominal'>
+        <calculation class='tableau' formula='LEFT([Customer Name], 3)' />
+      </column>
+      <column caption='Customer Ref' datatype='string' name='[Calculation_6]' role='dimension' type='nominal'>
+        <calculation class='tableau' formula='[Customer ID]' />
+      </column>
+      <column caption='Region Label' datatype='string' name='[Calculation_7]' role='dimension' type='nominal'>
+        <calculation class='tableau' formula='&quot;North America&quot;' />
+      </column>
+      <column caption='Weighted Score' datatype='real' name='[Calculation_8]' role='measure' type='quantitative'>
+        <calculation class='tableau' formula='CUSTOMSCORE([Sales], [Cost])' />
+      </column>
+    </datasource>
+    <datasource caption='Postgres Orders' name='postgres-orders' inline='true' version='18.1'>
+      <connection class='postgres'>
+        <named-connections>
+          <named-connection name='postgres.0def456' caption='Postgres Orders'>
+            <connection class='postgres' dbname='salesdb' server='warehouse.internal' service='' port='5432' username='analyst' />
+          </named-connection>
+        </named-connections>
+        <relation connection='postgres.0def456' name='Custom SQL Query' type='text'>SELECT customer_id, region, revenue FROM orders_summary WHERE revenue &gt; 0</relation>
+      </connection>
+      <column caption='Customer' datatype='string' name='[customer_id]' role='dimension' type='nominal' />
+      <column caption='Region' datatype='string' name='[region]' role='dimension' type='nominal' />
+      <column caption='Revenue' datatype='real' name='[revenue]' role='measure' type='quantitative' />
+    </datasource>
+  </datasources>
+  <worksheets>
+    <worksheet name='Sales Overview'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='snowflake-sales'>
+            <column caption='Order ID' datatype='integer' name='[Order ID]' role='dimension' type='ordinal' />
+            <column caption='Total Sales' datatype='real' name='[Calculation_2]' role='measure' type='quantitative' />
+            <column caption='Profit Tier' datatype='string' name='[Calculation_1]' role='dimension' type='nominal' />
+          </datasource-dependencies>
+        </view>
+      </table>
+    </worksheet>
+    <worksheet name='Customer Detail'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='postgres-orders'>
+            <column caption='Region' datatype='string' name='[region]' role='dimension' type='nominal' />
+            <column caption='Revenue' datatype='real' name='[revenue]' role='measure' type='quantitative' />
+          </datasource-dependencies>
+        </view>
+      </table>
+    </worksheet>
+  </worksheets>
+  <dashboards>
+    <dashboard name='Executive Dashboard'>
+      <zones>
+        <zone name='Sales Overview' type='layout-basic' />
+        <zone name='Customer Detail' type='layout-basic' />
+      </zones>
+    </dashboard>
+  </dashboards>
+</workbook>

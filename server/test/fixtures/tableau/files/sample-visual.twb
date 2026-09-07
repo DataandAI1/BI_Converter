@@ -1,0 +1,77 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<workbook version='18.1'>
+  <datasources>
+    <datasource name='federated.0abc123' caption='Orders'>
+      <connection class='federated'>
+        <named-connections>
+          <named-connection name='postgres.0conn1'>
+            <connection class='postgres' server='db.example.com' port='5432' dbname='shop' schema='public' />
+          </named-connection>
+        </named-connections>
+        <relation type='table' name='orders' table='[public].[orders]' connection='postgres.0conn1' />
+      </connection>
+      <column datatype='string' name='[Region]' role='dimension' />
+      <column datatype='real' name='[Sales]' role='measure' />
+      <column datatype='date' name='[Order Date]' role='dimension' />
+    </datasource>
+  </datasources>
+  <worksheets>
+    <worksheet name='Sales by Region'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='federated.0abc123'>
+            <column datatype='string' name='[Region]' role='dimension' />
+            <column datatype='real' name='[Sales]' role='measure' />
+          </datasource-dependencies>
+          <filter class='categorical' column='[federated.0abc123].[none:Region:nk]' />
+        </view>
+        <rows>[federated.0abc123].[none:Region:nk]</rows>
+        <cols>[federated.0abc123].[sum:Sales:qk]</cols>
+        <panes>
+          <pane>
+            <mark class='Bar' />
+            <encodings>
+              <color column='[federated.0abc123].[none:Region:nk]' />
+            </encodings>
+          </pane>
+        </panes>
+      </table>
+    </worksheet>
+    <worksheet name='Sales Trend'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='federated.0abc123'>
+            <column datatype='date' name='[Order Date]' role='dimension' />
+            <column datatype='real' name='[Sales]' role='measure' />
+          </datasource-dependencies>
+        </view>
+        <rows>[federated.0abc123].[sum:Sales:qk]</rows>
+        <cols>[federated.0abc123].[yr:Order Date:ok]</cols>
+        <panes>
+          <pane>
+            <mark class='Automatic' />
+          </pane>
+        </panes>
+      </table>
+    </worksheet>
+  </worksheets>
+  <dashboards>
+    <dashboard name='Regional Overview'>
+      <size sizing-mode='fixed' minwidth='1200' minheight='800' maxwidth='1200' maxheight='800' />
+      <zones>
+        <zone h='100000' w='100000' x='0' y='0' type-v2='layout-basic'>
+          <zone h='50000' w='100000' x='0' y='0' name='Sales by Region' />
+          <zone h='50000' w='60000' x='0' y='50000' name='Sales Trend' />
+          <zone h='50000' w='40000' x='60000' y='50000' type-v2='text'>
+            <formatted-text><run>Quarterly review</run></formatted-text>
+          </zone>
+        </zone>
+      </zones>
+    </dashboard>
+  </dashboards>
+  <thumbnails>
+    <thumbnail height='192' name='Regional Overview' width='192'>
+      iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+    </thumbnail>
+  </thumbnails>
+</workbook>

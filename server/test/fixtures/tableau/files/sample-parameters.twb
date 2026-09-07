@@ -1,0 +1,60 @@
+<?xml version='1.0' encoding='utf-8' ?>
+
+<workbook source-platform='win' version='18.1' xmlns:user='http://www.tableausoftware.com/xml/user'>
+  <preferences />
+  <datasources>
+    <datasource hasconnection='false' inline='true' name='Parameters' version='18.1'>
+      <aliases enabled='yes' />
+      <column caption='Select Metric' datatype='string' name='[Parameter 1]' param-domain-type='list' role='measure' type='nominal' value='&quot;Sales&quot;'>
+        <calculation class='tableau' formula='&quot;Sales&quot;' />
+        <members>
+          <member value='&quot;Sales&quot;' />
+          <member value='&quot;Profit&quot;' />
+        </members>
+      </column>
+      <column caption='Top N' datatype='integer' name='[Parameter 2]' param-domain-type='range' role='measure' type='quantitative' value='5'>
+        <calculation class='tableau' formula='5' />
+        <range granularity='1' max='20' min='1' />
+      </column>
+    </datasource>
+    <datasource caption='Orders' name='orders-ds' inline='true' version='18.1'>
+      <connection class='postgres'>
+        <named-connections>
+          <named-connection name='postgres.0conn1' caption='Orders'>
+            <connection class='postgres' dbname='shop' schema='public' server='db.example.com' service='' port='5432' username='analyst' />
+          </named-connection>
+        </named-connections>
+        <relation connection='postgres.0conn1' name='orders' table='[public].[orders]' type='table' />
+      </connection>
+      <column caption='Region' datatype='string' name='[Region]' role='dimension' type='nominal' />
+      <column caption='Sales' datatype='real' name='[Sales]' role='measure' type='quantitative' />
+    </datasource>
+  </datasources>
+  <worksheets>
+    <worksheet name='Sales by Region Sorted'>
+      <table>
+        <view>
+          <datasource-dependencies datasource='orders-ds'>
+            <column caption='Region' datatype='string' name='[Region]' role='dimension' type='nominal' />
+            <column caption='Sales' datatype='real' name='[Sales]' role='measure' type='quantitative' />
+          </datasource-dependencies>
+          <sort class='computed' column='[orders-ds].[none:Region:nk]' direction='DESC' using='[orders-ds].[sum:Sales:qk]' />
+        </view>
+        <rows>[orders-ds].[none:Region:nk]</rows>
+        <cols>[orders-ds].[sum:Sales:qk]</cols>
+        <panes>
+          <pane>
+            <mark class='Bar' />
+          </pane>
+        </panes>
+      </table>
+    </worksheet>
+  </worksheets>
+  <dashboards>
+    <dashboard name='Parameterized Dashboard'>
+      <zones>
+        <zone name='Sales by Region Sorted' type='layout-basic' />
+      </zones>
+    </dashboard>
+  </dashboards>
+</workbook>

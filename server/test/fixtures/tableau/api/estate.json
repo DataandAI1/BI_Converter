@@ -1,0 +1,547 @@
+{
+  "_comment": "Recorded-response fixture for the Tableau live connector (BI connectors plan Task 5, decision 10). Shapes mirror what a REAL Metadata API returns for queries.ts's interface-safe queries: field dataType/role/formula come from inline fragments on ColumnField/CalculatedField (enums UPPERCASE — buildField lowercases them for file-mode parity), there is no caption/isCalculated anywhere (the Metadata API has neither), table schema/database ride the DatabaseTable fragment, hostName the DatabaseServer fragment, and custom SQL arrives via the TOP-LEVEL customSQLTablesConnection ('customsql:<n>' steps — the datasource types have no such field), associated back to its owner through downstreamWorkbooks/downstreamDatasources. Two workbooks across two pages (proves pagination): page 1 is regional_ops (project Ops — one datasource against an unregistered mysql platform for the shadow-source-finding path), page 2 is sample (mirrors fixtures/tableau/files/sample.twb field-for-field — the live-vs-file parity subject, with upstream populated: API-declared upstream tables/columns, the live-only 0.95 source). The published datasource federated.0xyz789 mirrors fixtures/tableau/files/published.tds (same name, fields, snowflake connection, [PUBLIC].[REVENUE] relation) and appears in BOTH workbooks' upstreamDatasources; regional_ops (a PROJECT-scoped workbook) references it FIRST deliberately, pinning the regression where the deduped published DS inherited its first-seen carrier's project namespace. Only sample references it from a sheet.",
+  "steps": {
+    "signin": [
+      {
+        "json": {
+          "credentials": {
+            "token": "tok-fixture-abc123",
+            "site": {
+              "id": "site-fixture-1",
+              "contentUrl": ""
+            },
+            "user": {
+              "id": "user-fixture-1"
+            }
+          }
+        }
+      }
+    ],
+    "serverinfo": [
+      {
+        "json": {
+          "serverInfo": {
+            "productVersion": {
+              "value": "2024.2.1",
+              "build": "20242.24.0807.0327"
+            },
+            "restApiVersion": "3.22"
+          }
+        }
+      }
+    ],
+    "metadata-ping": [
+      {
+        "json": {
+          "data": {
+            "tableauSites": [
+              {
+                "name": "linetria-fixture"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "customsql:0": [
+      {
+        "json": {
+          "data": {
+            "customSQLTablesConnection": {
+              "nodes": [
+                {
+                  "_comment": "Owned by the embedded DS postgres-orders in workbook 'sample' — downstreamDatasources is EMPTY (the schema only lists PUBLISHED datasources there), so association goes through downstreamWorkbooks + the unambiguous-embedded-DS heuristic (postgres-orders is sample's only relation-less embedded DS).",
+                  "query": "SELECT customer_id, region, revenue FROM orders_summary WHERE revenue > 0",
+                  "database": {
+                    "name": "salesdb",
+                    "connectionType": "postgres",
+                    "hostName": "warehouse.internal"
+                  },
+                  "downstreamWorkbooks": [
+                    {
+                      "luid": "luid-wb-sample",
+                      "name": "sample"
+                    }
+                  ],
+                  "downstreamDatasources": []
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false,
+                "endCursor": null
+              }
+            }
+          }
+        }
+      }
+    ],
+    "workbooks:0": [
+      {
+        "json": {
+          "data": {
+            "workbooksConnection": {
+              "nodes": [
+                {
+                  "luid": "luid-wb-regional-ops",
+                  "name": "regional_ops",
+                  "projectName": "Ops",
+                  "sheets": [],
+                  "dashboards": [],
+                  "embeddedDatasources": [
+                    {
+                      "name": "mysql-inventory",
+                      "fields": [
+                        {
+                          "name": "sku",
+                          "dataType": "STRING",
+                          "role": "DIMENSION"
+                        }
+                      ],
+                      "upstreamTables": [
+                        {
+                          "name": "widgets",
+                          "schema": "dbo",
+                          "fullName": "[dbo].[widgets]",
+                          "database": {
+                            "name": "inventory",
+                            "connectionType": "mysql",
+                            "hostName": "inventory-db.mycorp.internal"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "upstreamDatasources": [
+                    {
+                      "_comment": "FIRST reference in page order: this Ops-project workbook carries the deduped published-DS doc. The mapper must pin it to the site-level namespace (default.federated.0xyz789) — inheriting this workbook's project would churn the FQN with reference ordering and break sample's sheet dep + file-mode parity.",
+                      "name": "federated.0xyz789",
+                      "fields": [
+                        {
+                          "name": "Revenue ID",
+                          "dataType": "INTEGER",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Revenue ID",
+                              "table": {
+                                "name": "REVENUE",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Amount",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "upstreamColumns": [
+                            {
+                              "name": "Amount",
+                              "table": {
+                                "name": "REVENUE",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Calculation_1",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "formula": "ROUND([Amount])"
+                        }
+                      ],
+                      "upstreamTables": [
+                        {
+                          "name": "REVENUE",
+                          "schema": "PUBLIC",
+                          "fullName": "[PUBLIC].[REVENUE]",
+                          "database": {
+                            "name": "SALES_DB",
+                            "connectionType": "snowflake",
+                            "hostName": "xy12345.snowflakecomputing.com"
+                          }
+                        }
+                      ],
+                      "luid": "luid-pub-4f6a2c19"
+                    }
+                  ]
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": true,
+                "endCursor": "cursor-page-2"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "workbooks:1": [
+      {
+        "json": {
+          "data": {
+            "workbooksConnection": {
+              "nodes": [
+                {
+                  "luid": "luid-wb-sample",
+                  "name": "sample",
+                  "projectName": "",
+                  "sheets": [
+                    {
+                      "name": "Sales Overview",
+                      "upstreamFields": [
+                        {
+                          "name": "Order ID",
+                          "datasource": {
+                            "name": "snowflake-sales"
+                          }
+                        },
+                        {
+                          "name": "Calculation_2",
+                          "datasource": {
+                            "name": "snowflake-sales"
+                          }
+                        },
+                        {
+                          "name": "Calculation_1",
+                          "datasource": {
+                            "name": "snowflake-sales"
+                          }
+                        },
+                        {
+                          "name": "Amount",
+                          "datasource": {
+                            "name": "federated.0xyz789"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Customer Detail",
+                      "upstreamFields": [
+                        {
+                          "name": "region",
+                          "datasource": {
+                            "name": "postgres-orders"
+                          }
+                        },
+                        {
+                          "name": "revenue",
+                          "datasource": {
+                            "name": "postgres-orders"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "dashboards": [
+                    {
+                      "name": "Executive Dashboard",
+                      "sheets": [
+                        {
+                          "name": "Sales Overview"
+                        },
+                        {
+                          "name": "Customer Detail"
+                        }
+                      ]
+                    }
+                  ],
+                  "embeddedDatasources": [
+                    {
+                      "name": "snowflake-sales",
+                      "fields": [
+                        {
+                          "name": "Order ID",
+                          "dataType": "INTEGER",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Order ID",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Sales",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "upstreamColumns": [
+                            {
+                              "name": "Sales",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Cost",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "_comment": "Deliberately no upstreamColumns here (API-declared upstream unresolved for this one field) so its only stitched edge is the calc-tokenizer-derived one from Calculation_8 — proves the 0.85 expression_ref path survives the dedup uncontested even when six sibling columns are also API-declared.",
+                          "upstreamColumns": []
+                        },
+                        {
+                          "name": "Customer ID",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Customer ID",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Customer Name",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Customer Name",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Region",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Region",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Order Date",
+                          "dataType": "DATE",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Order Date",
+                              "table": {
+                                "name": "ORDERS",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Calculation_1",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "formula": "IF [Sales] > 100 THEN \"High\" ELSE \"Low\" END"
+                        },
+                        {
+                          "name": "Calculation_2",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "formula": "SUM([Sales])"
+                        },
+                        {
+                          "name": "Calculation_3",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "formula": "{FIXED [Region] : SUM([Sales])}"
+                        },
+                        {
+                          "name": "Calculation_4",
+                          "dataType": "DATE",
+                          "role": "DIMENSION",
+                          "formula": "DATEADD('day', 30, [Order Date])"
+                        },
+                        {
+                          "name": "Calculation_5",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "formula": "LEFT([Customer Name], 3)"
+                        },
+                        {
+                          "name": "Calculation_6",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "formula": "[Customer ID]"
+                        },
+                        {
+                          "name": "Calculation_7",
+                          "dataType": "STRING",
+                          "role": "DIMENSION",
+                          "formula": "\"North America\""
+                        },
+                        {
+                          "name": "Calculation_8",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "formula": "CUSTOMSCORE([Sales], [Cost])"
+                        }
+                      ],
+                      "upstreamTables": [
+                        {
+                          "name": "ORDERS",
+                          "schema": "PUBLIC",
+                          "fullName": "[PUBLIC].[ORDERS]",
+                          "database": {
+                            "name": "SALES_DB",
+                            "connectionType": "snowflake",
+                            "hostName": "xy12345.snowflakecomputing.com"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "name": "postgres-orders",
+                      "fields": [
+                        {
+                          "name": "customer_id",
+                          "dataType": "STRING",
+                          "role": "DIMENSION"
+                        },
+                        {
+                          "name": "region",
+                          "dataType": "STRING",
+                          "role": "DIMENSION"
+                        },
+                        {
+                          "name": "revenue",
+                          "dataType": "REAL",
+                          "role": "MEASURE"
+                        }
+                      ],
+                      "upstreamTables": []
+                    }
+                  ],
+                  "upstreamDatasources": [
+                    {
+                      "name": "federated.0xyz789",
+                      "fields": [
+                        {
+                          "name": "Revenue ID",
+                          "dataType": "INTEGER",
+                          "role": "DIMENSION",
+                          "upstreamColumns": [
+                            {
+                              "name": "Revenue ID",
+                              "table": {
+                                "name": "REVENUE",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Amount",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "upstreamColumns": [
+                            {
+                              "name": "Amount",
+                              "table": {
+                                "name": "REVENUE",
+                                "schema": "PUBLIC",
+                                "database": {
+                                  "name": "SALES_DB",
+                                  "connectionType": "snowflake",
+                                  "hostName": "xy12345.snowflakecomputing.com"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "name": "Calculation_1",
+                          "dataType": "REAL",
+                          "role": "MEASURE",
+                          "formula": "ROUND([Amount])"
+                        }
+                      ],
+                      "upstreamTables": [
+                        {
+                          "name": "REVENUE",
+                          "schema": "PUBLIC",
+                          "fullName": "[PUBLIC].[REVENUE]",
+                          "database": {
+                            "name": "SALES_DB",
+                            "connectionType": "snowflake",
+                            "hostName": "xy12345.snowflakecomputing.com"
+                          }
+                        }
+                      ],
+                      "luid": "luid-pub-4f6a2c19",
+                      "_comment": "Second reference (page 2) — deduped away by doc assembly; sample's sheet ref to this DS must still resolve to the site-level FQN."
+                    }
+                  ]
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false,
+                "endCursor": null
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

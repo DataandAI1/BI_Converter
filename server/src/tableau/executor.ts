@@ -22,7 +22,7 @@ const FIXTURES_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
-  '..',
+  'test',
   'fixtures',
 );
 

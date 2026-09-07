@@ -1,0 +1,185 @@
+{
+  "steps": {
+    "signin": [
+      {
+        "json": {
+          "site": {
+            "id": "site-1"
+          }
+        }
+      }
+    ],
+    "serverinfo": [
+      {
+        "json": {
+          "serverInfo": {
+            "productVersion": {
+              "value": "2024.2"
+            }
+          }
+        }
+      }
+    ],
+    "metadata-ping": [
+      {
+        "json": {
+          "data": {
+            "tableauSites": [
+              {
+                "name": "default"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "customsql:0": [
+      {
+        "json": {
+          "data": {
+            "customSQLTablesConnection": {
+              "nodes": [],
+              "pageInfo": {
+                "hasNextPage": false,
+                "endCursor": null
+              }
+            }
+          }
+        }
+      }
+    ],
+    "workbooks:0": [
+      {
+        "json": {
+          "data": {
+            "workbooksConnection": {
+              "nodes": [
+                {
+                  "luid": "wb-vis-1",
+                  "name": "sample-visual",
+                  "projectName": "Ops",
+                  "sheets": [
+                    {
+                      "luid": "v-sheet-1",
+                      "name": "Sales by Region",
+                      "upstreamFields": [
+                        {
+                          "name": "Region",
+                          "datasource": {
+                            "name": "federated.0abc123"
+                          }
+                        },
+                        {
+                          "name": "Sales",
+                          "datasource": {
+                            "name": "federated.0abc123"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "luid": "v-sheet-2",
+                      "name": "Sales Trend",
+                      "upstreamFields": [
+                        {
+                          "name": "Order Date",
+                          "datasource": {
+                            "name": "federated.0abc123"
+                          }
+                        },
+                        {
+                          "name": "Sales",
+                          "datasource": {
+                            "name": "federated.0abc123"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "luid": "v-solo-1",
+                      "name": "Standalone Detail",
+                      "upstreamFields": []
+                    }
+                  ],
+                  "dashboards": [
+                    {
+                      "luid": "v-dash-1",
+                      "name": "Regional Overview",
+                      "sheets": [
+                        {
+                          "name": "Sales by Region"
+                        },
+                        {
+                          "name": "Sales Trend"
+                        }
+                      ]
+                    }
+                  ],
+                  "embeddedDatasources": [
+                    {
+                      "name": "federated.0abc123",
+                      "fields": [
+                        {
+                          "name": "Region",
+                          "dataType": "STRING",
+                          "role": "DIMENSION"
+                        },
+                        {
+                          "name": "Sales",
+                          "dataType": "REAL",
+                          "role": "MEASURE"
+                        },
+                        {
+                          "name": "Order Date",
+                          "dataType": "DATE",
+                          "role": "DIMENSION"
+                        }
+                      ],
+                      "upstreamTables": [
+                        {
+                          "name": "orders",
+                          "schema": "public",
+                          "database": {
+                            "name": "shop",
+                            "connectionType": "postgres",
+                            "hostName": "db.example.com"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "upstreamDatasources": []
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false,
+                "endCursor": null
+              }
+            }
+          }
+        }
+      }
+    ],
+    "content:wb-vis-1": [
+      {
+        "base64": "PD94bWwgdmVyc2lvbj0nMS4wJyBlbmNvZGluZz0ndXRmLTgnID8+Cjx3b3JrYm9vayB2ZXJzaW9uPScxOC4xJz4KICA8ZGF0YXNvdXJjZXM+CiAgICA8ZGF0YXNvdXJjZSBuYW1lPSdmZWRlcmF0ZWQuMGFiYzEyMycgY2FwdGlvbj0nT3JkZXJzJz4KICAgICAgPGNvbm5lY3Rpb24gY2xhc3M9J2ZlZGVyYXRlZCc+CiAgICAgICAgPG5hbWVkLWNvbm5lY3Rpb25zPgogICAgICAgICAgPG5hbWVkLWNvbm5lY3Rpb24gbmFtZT0ncG9zdGdyZXMuMGNvbm4xJz4KICAgICAgICAgICAgPGNvbm5lY3Rpb24gY2xhc3M9J3Bvc3RncmVzJyBzZXJ2ZXI9J2RiLmV4YW1wbGUuY29tJyBwb3J0PSc1NDMyJyBkYm5hbWU9J3Nob3AnIHNjaGVtYT0ncHVibGljJyAvPgogICAgICAgICAgPC9uYW1lZC1jb25uZWN0aW9uPgogICAgICAgIDwvbmFtZWQtY29ubmVjdGlvbnM+CiAgICAgICAgPHJlbGF0aW9uIHR5cGU9J3RhYmxlJyBuYW1lPSdvcmRlcnMnIHRhYmxlPSdbcHVibGljXS5bb3JkZXJzXScgY29ubmVjdGlvbj0ncG9zdGdyZXMuMGNvbm4xJyAvPgogICAgICA8L2Nvbm5lY3Rpb24+CiAgICAgIDxjb2x1bW4gZGF0YXR5cGU9J3N0cmluZycgbmFtZT0nW1JlZ2lvbl0nIHJvbGU9J2RpbWVuc2lvbicgLz4KICAgICAgPGNvbHVtbiBkYXRhdHlwZT0ncmVhbCcgbmFtZT0nW1NhbGVzXScgcm9sZT0nbWVhc3VyZScgLz4KICAgICAgPGNvbHVtbiBkYXRhdHlwZT0nZGF0ZScgbmFtZT0nW09yZGVyIERhdGVdJyByb2xlPSdkaW1lbnNpb24nIC8+CiAgICA8L2RhdGFzb3VyY2U+CiAgPC9kYXRhc291cmNlcz4KICA8d29ya3NoZWV0cz4KICAgIDx3b3Jrc2hlZXQgbmFtZT0nU2FsZXMgYnkgUmVnaW9uJz4KICAgICAgPHRhYmxlPgogICAgICAgIDx2aWV3PgogICAgICAgICAgPGRhdGFzb3VyY2UtZGVwZW5kZW5jaWVzIGRhdGFzb3VyY2U9J2ZlZGVyYXRlZC4wYWJjMTIzJz4KICAgICAgICAgICAgPGNvbHVtbiBkYXRhdHlwZT0nc3RyaW5nJyBuYW1lPSdbUmVnaW9uXScgcm9sZT0nZGltZW5zaW9uJyAvPgogICAgICAgICAgICA8Y29sdW1uIGRhdGF0eXBlPSdyZWFsJyBuYW1lPSdbU2FsZXNdJyByb2xlPSdtZWFzdXJlJyAvPgogICAgICAgICAgPC9kYXRhc291cmNlLWRlcGVuZGVuY2llcz4KICAgICAgICAgIDxmaWx0ZXIgY2xhc3M9J2NhdGVnb3JpY2FsJyBjb2x1bW49J1tmZWRlcmF0ZWQuMGFiYzEyM10uW25vbmU6UmVnaW9uOm5rXScgLz4KICAgICAgICA8L3ZpZXc+CiAgICAgICAgPHJvd3M+W2ZlZGVyYXRlZC4wYWJjMTIzXS5bbm9uZTpSZWdpb246bmtdPC9yb3dzPgogICAgICAgIDxjb2xzPltmZWRlcmF0ZWQuMGFiYzEyM10uW3N1bTpTYWxlczpxa108L2NvbHM+CiAgICAgICAgPHBhbmVzPgogICAgICAgICAgPHBhbmU+CiAgICAgICAgICAgIDxtYXJrIGNsYXNzPSdCYXInIC8+CiAgICAgICAgICAgIDxlbmNvZGluZ3M+CiAgICAgICAgICAgICAgPGNvbG9yIGNvbHVtbj0nW2ZlZGVyYXRlZC4wYWJjMTIzXS5bbm9uZTpSZWdpb246bmtdJyAvPgogICAgICAgICAgICA8L2VuY29kaW5ncz4KICAgICAgICAgIDwvcGFuZT4KICAgICAgICA8L3BhbmVzPgogICAgICA8L3RhYmxlPgogICAgPC93b3Jrc2hlZXQ+CiAgICA8d29ya3NoZWV0IG5hbWU9J1NhbGVzIFRyZW5kJz4KICAgICAgPHRhYmxlPgogICAgICAgIDx2aWV3PgogICAgICAgICAgPGRhdGFzb3VyY2UtZGVwZW5kZW5jaWVzIGRhdGFzb3VyY2U9J2ZlZGVyYXRlZC4wYWJjMTIzJz4KICAgICAgICAgICAgPGNvbHVtbiBkYXRhdHlwZT0nZGF0ZScgbmFtZT0nW09yZGVyIERhdGVdJyByb2xlPSdkaW1lbnNpb24nIC8+CiAgICAgICAgICAgIDxjb2x1bW4gZGF0YXR5cGU9J3JlYWwnIG5hbWU9J1tTYWxlc10nIHJvbGU9J21lYXN1cmUnIC8+CiAgICAgICAgICA8L2RhdGFzb3VyY2UtZGVwZW5kZW5jaWVzPgogICAgICAgIDwvdmlldz4KICAgICAgICA8cm93cz5bZmVkZXJhdGVkLjBhYmMxMjNdLltzdW06U2FsZXM6cWtdPC9yb3dzPgogICAgICAgIDxjb2xzPltmZWRlcmF0ZWQuMGFiYzEyM10uW3lyOk9yZGVyIERhdGU6b2tdPC9jb2xzPgogICAgICAgIDxwYW5lcz4KICAgICAgICAgIDxwYW5lPgogICAgICAgICAgICA8bWFyayBjbGFzcz0nQXV0b21hdGljJyAvPgogICAgICAgICAgPC9wYW5lPgogICAgICAgIDwvcGFuZXM+CiAgICAgIDwvdGFibGU+CiAgICA8L3dvcmtzaGVldD4KICA8L3dvcmtzaGVldHM+CiAgPGRhc2hib2FyZHM+CiAgICA8ZGFzaGJvYXJkIG5hbWU9J1JlZ2lvbmFsIE92ZXJ2aWV3Jz4KICAgICAgPHNpemUgc2l6aW5nLW1vZGU9J2ZpeGVkJyBtaW53aWR0aD0nMTIwMCcgbWluaGVpZ2h0PSc4MDAnIG1heHdpZHRoPScxMjAwJyBtYXhoZWlnaHQ9JzgwMCcgLz4KICAgICAgPHpvbmVzPgogICAgICAgIDx6b25lIGg9JzEwMDAwMCcgdz0nMTAwMDAwJyB4PScwJyB5PScwJyB0eXBlLXYyPSdsYXlvdXQtYmFzaWMnPgogICAgICAgICAgPHpvbmUgaD0nNTAwMDAnIHc9JzEwMDAwMCcgeD0nMCcgeT0nMCcgbmFtZT0nU2FsZXMgYnkgUmVnaW9uJyAvPgogICAgICAgICAgPHpvbmUgaD0nNTAwMDAnIHc9JzYwMDAwJyB4PScwJyB5PSc1MDAwMCcgbmFtZT0nU2FsZXMgVHJlbmQnIC8+CiAgICAgICAgICA8em9uZSBoPSc1MDAwMCcgdz0nNDAwMDAnIHg9JzYwMDAwJyB5PSc1MDAwMCcgdHlwZS12Mj0ndGV4dCc+CiAgICAgICAgICAgIDxmb3JtYXR0ZWQtdGV4dD48cnVuPlF1YXJ0ZXJseSByZXZpZXc8L3J1bj48L2Zvcm1hdHRlZC10ZXh0PgogICAgICAgICAgPC96b25lPgogICAgICAgIDwvem9uZT4KICAgICAgPC96b25lcz4KICAgIDwvZGFzaGJvYXJkPgogIDwvZGFzaGJvYXJkcz4KICA8dGh1bWJuYWlscz4KICAgIDx0aHVtYm5haWwgaGVpZ2h0PScxOTInIG5hbWU9J1JlZ2lvbmFsIE92ZXJ2aWV3JyB3aWR0aD0nMTkyJz4KICAgICAgaVZCT1J3MEtHZ29BQUFBTlNVaEVVZ0FBQUFFQUFBQUJDQVlBQUFBZkZjU0pBQUFBRFVsRVFWUjQybVA4ejhCUUR3QUVoUUdBaEttTUlRQUFBQUJKUlU1RXJrSmdnZz09CiAgICA8L3RodW1ibmFpbD4KICA8L3RodW1ibmFpbHM+Cjwvd29ya2Jvb2s+Cg==",
+        "contentType": "application/xml",
+        "byteLength": 3031
+      }
+    ],
+    "image:v-dash-1": [
+      {
+        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "contentType": "image/png",
+        "byteLength": 70
+      }
+    ],
+    "image:v-solo-1": [
+      {
+        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "contentType": "image/png",
+        "byteLength": 70
+      }
+    ]
+  }
+}
