@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tableauforge"
+version = "0.1.0"
+description = "Turn wireframes, plain-English descriptions, CSVs, and database connections into real, openable Tableau workbook files (.twb/.twbx)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "jsonschema>=4.22",
+    "lxml>=5.2",
+    "anthropic>=0.109",  # output_config (effort) + refusal stop-reason handling
+    "python-multipart>=0.0.9",
+    "pandas>=2.2",
+    "pantab>=4.0",
+    "tableauhyperapi>=0.0.18825",
+    "tableaudocumentapi>=0.11",
+    "setuptools>=68",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "mcp>=1.9",  # MCP client for the tableau-mcp (published datasource) connector
+    "httpx>=0.27",  # Ollama provider transport (also pulled in via mcp)
+    "sqlglot>=25.0",  # Databricks SQL parse gate for the .lvdash.json validator
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "pillow>=12",
+]
+
+[project.scripts]
+tableauforge = "tableauforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tableauforge*"]
+
+[tool.setuptools.package-data]
+tableauforge = ["spec/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["tableauforge"]
+omit = ["tableauforge/api/*", "tableauforge/llm/*", "tableauforge/cli.py"]

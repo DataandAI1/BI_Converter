@@ -1,0 +1,15 @@
+{
+  "dataTypes": ["STRING", "INTEGER", "DECIMAL", "DATE", "DATETIME"],
+
+  "complexTypes": ["MULTI", "RANGE"],
+
+  "filterWidgets": {
+    "STRING": "filter-single-select",
+    "STRING:MULTI": "filter-multi-select",
+    "INTEGER": "filter-single-select",
+    "DECIMAL": "filter-single-select",
+    "DATE": "filter-date-picker",
+    "DATE:RANGE": "filter-date-range-picker",
+    "DATETIME:RANGE": "filter-date-range-picker"
+  }
+}

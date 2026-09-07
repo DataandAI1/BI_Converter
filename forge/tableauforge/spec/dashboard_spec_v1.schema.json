@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tableauforge.dev/schemas/dashboard_spec_v1.schema.json",
+  "title": "DashboardSpec v1",
+  "description": "Intermediate representation between LLM intent extraction and the deterministic TWB compiler. The LLM authors this and only this.",
+  "type": "object",
+  "required": ["spec_version", "workbook", "datasources", "worksheets"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": { "const": "1.0" },
+    "workbook": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "theme": { "enum": ["default", "midnight", "slate", "sunrise"] },
+        "accent": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "layout_template": { "type": "string", "maxLength": 64 }
+      }
+    },
+    "datasources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/datasource" }
+    },
+    "worksheets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": { "$ref": "#/$defs/worksheet" }
+    },
+    "dashboards": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/dashboard" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "description": "Stable machine id, snake_case."
+    },
+    "fieldName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\[\\]]+$",
+      "description": "Field name as it appears in the data source, without Tableau brackets."
+    },
+    "datatype": {
+      "enum": ["string", "integer", "real", "boolean", "date", "datetime"]
+    },
+    "aggregation": {
+      "enum": ["sum", "avg", "min", "max", "count", "countd", "median", "none"]
+    },
+    "datePart": {
+      "enum": ["year", "quarter", "month", "week", "day", "exact"],
+      "description": "How to derive a part of a date/datetime field. Set this on a fieldRef (shelf/encoding) or a filter to group, trend, sort, or filter by month/year/quarter/etc. This is the ONLY way to use a date part: there is no separate 'Month'/'Year' field — reference the date field with a date_part instead of inventing one."
+    },
+    "datasource": {
+      "type": "object",
+      "required": ["id", "name", "kind", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": { "enum": ["embedded_csv", "live_database", "published_datasource"] },
+        "csv": {
+          "type": "object",
+          "required": ["table_name"],
+          "additionalProperties": false,
+          "properties": {
+            "table_name": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        "database": {
+          "type": "object",
+          "required": ["dialect", "host", "database", "table"],
+          "additionalProperties": false,
+          "properties": {
+            "dialect": { "enum": ["postgres", "mysql", "snowflake", "sqlserver", "databricks"] },
+            "host": { "type": "string", "minLength": 1 },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "database": { "type": "string", "minLength": 1 },
+            "db_schema": { "type": "string" },
+            "table": { "type": "string", "minLength": 1 },
+            "username": { "type": "string" },
+            "warehouse": { "type": "string" },
+            "http_path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Databricks SQL warehouse HTTP path (databricks dialect only)."
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "dialect": { "const": "databricks" } }, "required": ["dialect"] },
+              "else": { "not": { "required": ["http_path"] } }
+            }
+          ]
+        },
+        "published": {
+          "type": "object",
+          "required": ["server", "datasource_name"],
+          "additionalProperties": false,
+          "properties": {
+            "server": { "type": "string", "minLength": 1 },
+            "site": { "type": "string" },
+            "datasource_luid": { "type": "string" },
+            "datasource_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "content_url": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "calculated_fields": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/calculatedField" }
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/dashboardParameter" },
+          "description": "Dashboard parameters this datasource's dataset declares. Databricks AI/BI target only: each becomes a `datasets[].parameters[]` entry that the dataset SQL reads as `:name`, and (except datetime) a filter widget on the page. The Tableau and Power BI compilers ignore the list."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "embedded_csv" } } },
+          "then": { "required": ["csv"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "live_database" } } },
+          "then": { "required": ["database"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "published_datasource" } } },
+          "then": { "required": ["published"] }
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "required": ["name", "datatype", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/fieldName" },
+        "datatype": { "$ref": "#/$defs/datatype" },
+        "role": { "enum": ["dimension", "measure"] },
+        "default_aggregation": { "$ref": "#/$defs/aggregation" },
+        "caption": { "type": "string", "maxLength": 255 }
+      }
+    },
+    "calculatedField": {
+      "type": "object",
+      "required": ["name", "formula", "datatype", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/fieldName" },
+        "formula": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "datatype": { "$ref": "#/$defs/datatype" },
+        "role": { "enum": ["dimension", "measure"] },
+        "formula_language": {
+          "enum": ["tableau_calc", "dax", "sql"],
+          "default": "tableau_calc",
+          "description": "Language the formula is written in. The Tableau compiler accepts tableau_calc only; the Power BI compiler accepts dax only; the Databricks AI/BI compiler accepts sql (Databricks SQL) only — a spec is authored for exactly one target."
+        },
+        "template": {
+          "enum": ["yoy_growth", "pytd", "qtd", "running_total", "percent_of_total", "custom"]
+        }
+      }
+    },
+    "dashboardParameter": {
+      "type": "object",
+      "required": ["name", "datatype", "default"],
+      "additionalProperties": false,
+      "description": "A single-value dashboard parameter. The pinned MULTI (value list) and RANGE (min/max) complex forms are deliberately out of scope — nothing in an authored spec can ground them.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier",
+          "description": "The SQL keyword the dataset reads as `:name`, snake_case."
+        },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "datatype": {
+          "enum": ["string", "integer", "decimal", "date", "datetime"],
+          "description": "Lakeview's parameter datatype vocabulary — note 'decimal' (not the spec's 'real'), and no boolean parameter."
+        },
+        "default": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "The parameter's default value, as literal text (e.g. \"100\", \"2026-01-01\", \"East\")."
+        }
+      }
+    },
+    "fieldRef": {
+      "type": "object",
+      "required": ["field"],
+      "additionalProperties": false,
+      "properties": {
+        "field": { "$ref": "#/$defs/fieldName" },
+        "aggregation": { "$ref": "#/$defs/aggregation" },
+        "date_part": { "$ref": "#/$defs/datePart" },
+        "as_discrete": { "type": "boolean" }
+      }
+    },
+    "worksheet": {
+      "type": "object",
+      "required": ["id", "title", "datasource", "chart"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "datasource": { "$ref": "#/$defs/identifier" },
+        "chart": { "$ref": "#/$defs/chart" },
+        "filters": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/filter" }
+        }
+      }
+    },
+    "chart": {
+      "type": "object",
+      "required": ["type", "rows", "cols"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "bar",
+            "line",
+            "area",
+            "text_table",
+            "scatter",
+            "dual_axis_bar_line",
+            "counter",
+            "pie",
+            "heatmap",
+            "pivot",
+            "combo"
+          ],
+          "description": "The first six are the cross-target vocabulary every compiler understands; counter/pie/heatmap/pivot/combo are Databricks AI/BI (Lakeview) chart types that only the databricks target compiles."
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/fieldRef" }
+        },
+        "cols": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/fieldRef" }
+        },
+        "color": { "$ref": "#/$defs/fieldRef" },
+        "size": { "$ref": "#/$defs/fieldRef" },
+        "label": { "$ref": "#/$defs/fieldRef" },
+        "detail": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/fieldRef" }
+        },
+        "tooltip": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/fieldRef" }
+        },
+        "secondary_rows": {
+          "type": "array",
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/fieldRef" },
+          "description": "Second axis for dual_axis_bar_line charts."
+        },
+        "sort": {
+          "type": "object",
+          "required": ["order"],
+          "additionalProperties": false,
+          "description": "Sorts the worksheet's first dimension pill. Omit 'by' (or set it to that dimension) for an alphabetic sort by its own values; set 'by' to another field for a computed sort (measures use their aggregation, dimensions sort by COUNT); give 'values' for an explicit manual member order.",
+          "properties": {
+            "by": { "$ref": "#/$defs/fieldName" },
+            "order": { "enum": ["asc", "desc"] },
+            "type": {
+              "enum": ["auto", "alphabetic", "computed", "manual"],
+              "default": "auto"
+            },
+            "values": {
+              "type": "array",
+              "items": { "type": "string" },
+              "maxItems": 200,
+              "description": "Explicit member order for a manual sort, first to last."
+            }
+          }
+        }
+      }
+    },
+    "filter": {
+      "type": "object",
+      "required": ["field", "filter_type"],
+      "additionalProperties": false,
+      "properties": {
+        "field": { "$ref": "#/$defs/fieldName" },
+        "filter_type": { "enum": ["categorical", "range", "relative_date"] },
+        "values": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": ["string", "number", "boolean"] }
+        },
+        "min": { "type": ["number", "string"] },
+        "max": { "type": ["number", "string"] },
+        "date_part": { "$ref": "#/$defs/datePart" },
+        "show_quick_filter": { "type": "boolean" }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "required": ["id", "title", "size", "zones"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "size": {
+          "type": "object",
+          "required": ["width", "height"],
+          "additionalProperties": false,
+          "properties": {
+            "width": { "type": "integer", "minimum": 200, "maximum": 10000 },
+            "height": { "type": "integer", "minimum": 200, "maximum": 10000 }
+          }
+        },
+        "zones": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 40,
+          "items": { "$ref": "#/$defs/zone" }
+        },
+        "shared_filters": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/filter" },
+          "description": "Filters applied to all worksheets on the dashboard, shown as quick filters."
+        }
+      }
+    },
+    "zone": {
+      "type": "object",
+      "required": ["kind", "x", "y", "w", "h"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["worksheet", "text", "blank"] },
+        "worksheet": { "$ref": "#/$defs/identifier" },
+        "text": { "type": "string", "maxLength": 2000 },
+        "x": { "type": "number", "minimum": 0, "maximum": 100 },
+        "y": { "type": "number", "minimum": 0, "maximum": 100 },
+        "w": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "h": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Wireframe-inference confidence; <0.7 is surfaced to the user for confirmation."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "worksheet" } } },
+          "then": { "required": ["worksheet"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "text" } } },
+          "then": { "required": ["text"] }
+        }
+      ]
+    }
+  }
+}

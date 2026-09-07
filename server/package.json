@@ -1,0 +1,31 @@
+{
+  "name": "@bi-converter/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "bi-converter": "./dist/src/cli.js" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts",
+    "serve": "tsx src/cli.ts serve",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.0",
+    "better-sqlite3": "^11.5.0",
+    "fast-xml-parser": "^5.10.1",
+    "fastify": "^5.0.0",
+    "fflate": "^0.8.3",
+    "undici": "^7.28.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
