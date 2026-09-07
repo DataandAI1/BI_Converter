@@ -110,6 +110,17 @@ export function convertToLakeviewPack(
     objects,
   };
 
+  // Object-level needs_review has to reach the RUN, not just the manifest. Without this a
+  // conversion whose checklist holds a dozen hand-port items reports "no warnings" at the
+  // run level, which is precisely the kind of quiet overclaim the spec's honesty rule
+  // exists to prevent.
+  if (manifest.counts.needs_review > 0) {
+    warnings.push(
+      `${manifest.counts.needs_review} of ${manifest.counts.total} objects need review — ` +
+        `see rebuild_checklist.md`,
+    );
+  }
+
   files.set('manifest.json', JSON.stringify(manifest, null, 2) + '\n');
   files.set('README.md', readme(manifest, bound.stats, warnings));
 

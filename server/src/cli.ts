@@ -10,6 +10,7 @@ import { Runner, runNeedsReview } from './forge/runner.js';
 import { RunStore, type ArtifactKind } from './store/store.js';
 import { authFromEnv, LakeviewClient } from './deploy/lakeview-client.js';
 import { deployPack } from './deploy/deploy.js';
+import { buildServer } from './api/app.js';
 
 /**
  * `bi-converter` (spec §8.1). Three commands: convert a workbook into a pack, deploy a
@@ -336,8 +337,32 @@ async function cmdDeploy(args: Args): Promise<number> {
   return 0;
 }
 
-async function cmdServe(_args: Args): Promise<number> {
-  throw new UsageError('serve is not wired up yet');
+async function cmdServe(args: Args): Promise<number> {
+  const port = Number(str(args.flags, 'port') ?? 4123);
+  if (!Number.isFinite(port)) throw new UsageError('--port must be a number');
+
+  const store = new RunStore(stateDir());
+  const app = buildServer({ store, forgeUrl: forgeUrl(args) });
+  await app.listen({ port, host: '127.0.0.1' });
+  process.stdout.write(
+    `bi-converter listening on http://127.0.0.1:${port}
+` +
+      `State: ${stateDir()}
+Forge: ${forgeUrl(args)}
+`,
+  );
+  // Serve until interrupted; the store closes with the process.
+  await new Promise<void>((resolve) => {
+    const stop = () => {
+      void app.close().then(() => {
+        store.close();
+        resolve();
+      });
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+  return 0;
 }
 
 /* ---------------------------------------------------------------------- main */

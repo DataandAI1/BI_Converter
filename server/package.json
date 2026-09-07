@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "bin": { "bi-converter": "./dist/src/cli.js" },
+  "bin": {
+    "bi-converter": "./dist/src/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -14,6 +16,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
+    "@fastify/static": "^10.1.3",
     "better-sqlite3": "^11.5.0",
     "fast-xml-parser": "^5.10.1",
     "fastify": "^5.0.0",
