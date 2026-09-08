@@ -1526,3 +1526,19 @@ def test_golden_lvdash_matches(lakeview_spec_dict: dict[str, Any]) -> None:
         "and re-bless tests/golden/rebuild_live.lvdash.json only if the change is "
         "intended (it is also re-ingested by the server's integration suite)"
     )
+
+
+def test_a_counter_authored_without_shelves_compiles_identically(
+    lakeview_spec_dict: dict[str, Any],
+) -> None:
+    """Omitting rows/cols is the same document as writing them empty — which is
+    why authoring may default them instead of failing the build."""
+    with_empty = _compile(lakeview_spec_dict)
+
+    chart = lakeview_spec_dict["worksheets"][1]["chart"]
+    assert chart["type"] == "counter"
+    del chart["rows"]
+    del chart["cols"]
+    assert_valid_spec(lakeview_spec_dict)
+
+    assert _compile(lakeview_spec_dict) == with_empty

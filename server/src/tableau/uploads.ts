@@ -5,6 +5,8 @@
  * "what is this file?" plus the `BiFileParser` shape `tableau/index.ts` implements.
  */
 
+import { unzipSync } from 'fflate';
+import { decodeXmlText } from './files.js';
 import type { StagingBatch } from './staging.js';
 
 export type BiFileKind = 'tableau_workbook' | 'tableau_datasource' | 'unknown';
@@ -21,12 +23,32 @@ const EXTENSION_KIND: Record<string, BiFileKind> = {
   '.tdsx': 'tableau_datasource',
 };
 
+/** The first few KB as text — enough to see the root element — honouring a BOM or a
+ *  UTF-16 encoding the way the parser does, so the two never disagree about a file. */
 function tryDecodeText(data: Uint8Array): string | null {
+  const head = Buffer.from(data.buffer, data.byteOffset, Math.min(data.byteLength, 8192));
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(data);
+    const text = decodeXmlText(head);
+    // A binary file decodes to replacement characters, never to an XML prolog.
+    return text.includes('\ufffd') && !text.trimStart().startsWith('<') ? null : text;
   } catch {
     return null;
   }
+}
+
+/** What a zip with no Tableau extension packages, if it packages a Tableau document
+ *  at all. A browser or a mail client renaming a `.twbx` to `.zip` is common enough
+ *  that "a .twbx is only a .twbx because it says so" cost real conversions. */
+function sniffZipKind(data: Uint8Array): BiFileKind {
+  let names: string[];
+  try {
+    names = Object.keys(unzipSync(data));
+  } catch {
+    return 'unknown';
+  }
+  if (names.some((n) => /\.twb$/i.test(n))) return 'tableau_workbook';
+  if (names.some((n) => /\.tds$/i.test(n))) return 'tableau_datasource';
+  return 'unknown';
 }
 
 function sniffXmlKind(text: string): BiFileKind {
@@ -57,8 +79,8 @@ function looksLikeZip(data: Uint8Array): boolean {
 
 /**
  * Determine a file's kind. Extension wins when recognized (covers `.twb`/`.twbx`/`.tds`/
- * `.tdsx` without opening the file); otherwise the XML root element decides. A zip with
- * no recognized extension is `unknown` — a `.twbx` is only a `.twbx` because it says so.
+ * `.tdsx` without opening the file); otherwise the content decides — the XML root
+ * element, or the document a zip packages.
  */
 export function sniffBiFileKind(name: string, data: Uint8Array): BiFileKind {
   const lower = name.toLowerCase();
@@ -67,7 +89,7 @@ export function sniffBiFileKind(name: string, data: Uint8Array): BiFileKind {
   const byExt = EXTENSION_KIND[ext];
   if (byExt) return byExt;
 
-  if (looksLikeZip(data)) return 'unknown';
+  if (looksLikeZip(data)) return sniffZipKind(data);
   const text = tryDecodeText(data);
   if (text == null) return 'unknown';
   if (text.trimStart().startsWith('<')) return sniffXmlKind(text);

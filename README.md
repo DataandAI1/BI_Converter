@@ -52,6 +52,26 @@ The deterministic pack is written **first and always**, even on the AI path. It 
 nothing, it is the diff baseline for what the model returns, and it means a forge that
 never answers still leaves a working conversion.
 
+## What happens when the AI lane cannot deliver
+
+The AI lane is allowed to fail; the conversion is not. An AI-lane run that the forge
+rejects, or that the model cannot author within its retries, **succeeds on its
+deterministic pack**: the run records `deterministic` as the lane that produced what it
+holds, carries a warning that starts with `AI-authored lane failed:` and names the cause,
+and shows as *needs review*. The forge's validation report is kept on the run for
+diagnosis. Only a run with no pack to fall back on is marked failed.
+
+Transient trouble is retried rather than surfaced: a forge answering 429, 502 or 503 (the
+model provider throttling, Ollama still loading a model) is tried three more times with
+backoff before the lane gives up, and a forge that is unreachable parks the queue, which
+then re-tries by itself with backoff until the forge answers. A server restart resumes
+any run it finds queued or mid-flight from the brief persisted with it, up to twice per
+run, instead of failing it.
+
+Inside a workbook, one sheet, datasource or whole workbook the converter cannot handle
+becomes a *skipped* object with the reason in the checklist and the README; the rest of
+the pack is unaffected.
+
 ## Commands
 
 ```

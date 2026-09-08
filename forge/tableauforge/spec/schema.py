@@ -273,3 +273,142 @@ def assert_valid_spec(spec: dict[str, Any]) -> None:
     errors = validate_spec(spec)
     if errors:
         raise SpecValidationError(errors)
+
+
+# ---- schema-driven repairs ----------------------------------------------------
+#
+# Each of these undoes one mechanical model habit that the validator would otherwise
+# turn into a failed attempt: wrong enum casing, a shelf under a near-miss key, a stray
+# key on an object, two worksheets with one title. None of them invents content — a
+# value is only rewritten when exactly one schema-legal form matches it, and a dropped
+# key is reported to the caller.
+
+
+def _resolve_ref(node: Any) -> Any:
+    """Follow a local ``$ref`` (``#/$defs/x``) to its definition."""
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref = node["$ref"]
+        if not ref.startswith("#/"):
+            return node
+        target: Any = load_schema()
+        for part in ref[2:].split("/"):
+            target = target.get(part) if isinstance(target, dict) else None
+        if target is None:
+            return node
+        node = target
+    return node
+
+
+def _walk_schema(
+    node: Any,
+    value: Any,
+    path: str,
+    on_object: Any,
+    on_enum: Any,
+) -> None:
+    """Visit ``value`` alongside the schema node that describes it, calling
+    ``on_object(schema, obj, path)`` for every object-typed node and
+    ``on_enum(enum, obj, key, path)`` for every enum-typed property."""
+    node = _resolve_ref(node)
+    if not isinstance(node, dict):
+        return
+    if isinstance(value, dict) and isinstance(node.get("properties"), dict):
+        on_object(node, value, path)
+        for key, sub in node["properties"].items():
+            if key not in value:
+                continue
+            sub = _resolve_ref(sub)
+            if isinstance(sub, dict) and isinstance(sub.get("enum"), list):
+                on_enum(sub["enum"], value, key, f"{path}.{key}")
+            _walk_schema(sub, value[key], f"{path}.{key}", on_object, on_enum)
+    elif isinstance(value, list) and "items" in node:
+        for i, item in enumerate(value):
+            _walk_schema(node["items"], item, f"{path}[{i}]", on_object, on_enum)
+
+
+def _enum_key(value: str) -> str:
+    return re.sub(r"[\s\-]+", "_", value.strip().lower())
+
+
+def repair_enums(spec: dict[str, Any]) -> None:
+    """Rewrite an enum value whose only fault is casing or a hyphen/space where the
+    schema has an underscore ('Bar', 'SUM', 'Live-Database'), in place. A value that
+    matches no enum member this way is left for the validator to report."""
+
+    def on_enum(members: list[Any], obj: dict[str, Any], key: str, _path: str) -> None:
+        value = obj.get(key)
+        if not isinstance(value, str) or value in members:
+            return
+        wanted = _enum_key(value)
+        matches = [m for m in members if isinstance(m, str) and _enum_key(m) == wanted]
+        if len(matches) == 1:
+            obj[key] = matches[0]
+
+    _walk_schema(load_schema(), spec, "$", lambda *_: None, on_enum)
+
+
+#: Near-miss keys a model reaches for on a chart, and the shelf each one means.
+_CHART_KEY_ALIASES: dict[str, str] = {
+    "columns": "cols",
+    "column": "cols",
+    "x": "cols",
+    "row": "rows",
+    "y": "rows",
+    "colour": "color",
+    "colors": "color",
+    "colours": "color",
+    "labels": "label",
+    "tooltips": "tooltip",
+    "details": "detail",
+    "sizes": "size",
+    "shapes": "shape",
+}
+
+
+def repair_unknown_keys(spec: dict[str, Any]) -> list[str]:
+    """Move a chart shelf filed under a near-miss key to its real name, then drop any key
+    an additionalProperties:false object does not allow, in place. Returns one message
+    per dropped key so the caller can report what the model tried to say and the format
+    cannot hold. The root and the zones have their own repairs and are left alone."""
+    dropped: list[str] = []
+    zone_props = set(load_schema()["$defs"]["zone"]["properties"])
+
+    def on_object(node: dict[str, Any], obj: dict[str, Any], path: str) -> None:
+        if path == "$" or node.get("additionalProperties") is not False:
+            return
+        allowed = set(node["properties"])
+        if allowed == zone_props:
+            return
+        if path.endswith(".chart"):
+            for alias, canonical in _CHART_KEY_ALIASES.items():
+                if alias in obj and canonical in allowed and canonical not in obj:
+                    obj[canonical] = obj.pop(alias)
+        for key in [k for k in list(obj) if k not in allowed]:
+            obj.pop(key)
+            dropped.append(
+                f"{path}: dropped '{key}', which the dashboard spec has no place for"
+            )
+
+    _walk_schema(load_schema(), spec, "$", on_object, lambda *_: None)
+    return dropped
+
+
+def repair_titles(spec: dict[str, Any]) -> None:
+    """Give every worksheet a distinct title, in place, by numbering repeats
+    ('Sales', 'Sales (2)'). Titles are not schema-checked, but the compiler requires
+    them unique — so a duplicate used to pass every authoring gate and fail the build
+    after the last retry was spent."""
+    seen: dict[str, int] = {}
+    for ws in spec.get("worksheets") or []:
+        if not isinstance(ws, dict) or not isinstance(ws.get("title"), str):
+            continue
+        title = ws["title"]
+        if title not in seen:
+            seen[title] = 1
+            continue
+        n = seen[title] + 1
+        while f"{title} ({n})" in seen:
+            n += 1
+        seen[title] = n
+        ws["title"] = f"{title} ({n})"
+        seen[ws["title"]] = 1

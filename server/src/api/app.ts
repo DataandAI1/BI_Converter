@@ -86,6 +86,18 @@ export function runView(row: RunRow, artifacts: number) {
   };
 }
 
+/**
+ * A Content-Disposition whose filename cannot break the header. The workbook name is the
+ * upload's own name or whatever the caller typed: a quote, a CR/LF or a non-ASCII
+ * character in it made the header invalid and the download a 500. The ASCII form keeps
+ * the header well-formed for every client; the RFC 5987 form carries the real name.
+ */
+export function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').trim() || 'pack.zip';
+  const utf8 = encodeURIComponent(filename.replace(/[\r\n]/g, ' '));
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
 function artifactKind(rel: string): ArtifactKind {
   if (rel.endsWith('.lvdash.json')) return 'lvdash';
   if (rel.endsWith('rebuild_checklist.md')) return 'checklist';
@@ -112,6 +124,8 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
 
   // AppError carries a status and a message meant for the caller; anything else is a
   // logged, opaque 500 — an internal failure must not leak a stack or a filesystem path.
+  app.addHook('onClose', async () => runner.close());
+
   app.setErrorHandler((err: unknown, _req, reply) => {
     if (err instanceof AppError) {
       reply.status(err.statusCode).send({ error: err.message });
@@ -316,9 +330,12 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
         name = body.name ?? parsed.name;
         sourceKind = 'tableau_server';
       } else {
-        if (!body.fileName || !body.data) {
+        if (!body.fileName || body.data == null) {
           throw new AppError(422, 'provide a fileName and data, or a tableauServer');
         }
+        // A zero-byte upload base64-encodes to '' — the file was given, it just holds
+        // nothing, and "provide a file" would send the user looking for the wrong thing.
+        if (body.data === '') throw new AppError(422, `'${path.basename(body.fileName)}' is empty`);
         name = body.name ?? path.basename(body.fileName).replace(/\.[^.]+$/, '');
         parsed = parseSource(body.fileName, Buffer.from(body.data, 'base64'), name);
         sourceKind = 'file';
@@ -342,14 +359,24 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
     const run = store.createRun({ sourceKind, workbookName: name, lane });
     const outDir = path.join(packRoot, run.id);
 
-    const result = convertDeterministic(parsed, { mapping });
-    for (const [rel, content] of result.files) {
-      const target = path.join(outDir, rel);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, content, 'utf8');
-      store.addArtifact(run.id, target, artifactKind(rel), Buffer.byteLength(content, 'utf8'));
+    // From here on a run row exists, so anything that breaks has to land ON the row:
+    // an exception escaping to the error handler left the run 'queued' forever behind an
+    // opaque 500, and the Run screen polled it until the next restart failed it.
+    let result: ReturnType<typeof convertDeterministic>;
+    try {
+      result = convertDeterministic(parsed, { mapping });
+      for (const [rel, content] of result.files) {
+        const target = path.join(outDir, rel);
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, content, 'utf8');
+        store.addArtifact(run.id, target, artifactKind(rel), Buffer.byteLength(content, 'utf8'));
+      }
+      store.updateRun(run.id, { warnings: result.warnings });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      store.updateRun(run.id, { status: 'failed', error: `conversion failed: ${reason}` });
+      throw new AppError(500, `conversion failed: ${reason}`);
     }
-    store.updateRun(run.id, { warnings: result.warnings });
 
     if (lane === 'deterministic') {
       store.updateRun(run.id, { status: 'succeeded' });
@@ -423,7 +450,7 @@ export function buildServer(opts: ServerOptions): FastifyInstance {
     if (files.size === 0) throw new AppError(404, 'that run produced no artifacts');
     reply
       .type('application/zip')
-      .header('content-disposition', `attachment; filename="${row.workbook_name}-pack.zip"`);
+      .header('content-disposition', contentDisposition(`${row.workbook_name}-pack.zip`));
     return Buffer.from(zipPack(files));
   });
 

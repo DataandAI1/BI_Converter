@@ -468,6 +468,23 @@ export function emitSemanticLayer(
 
   for (const ds of datasources) {
     const dsLabel = displayName(top, ds);
+    const filesBefore = new Set(files.keys());
+    try {
+      emitDatasource(ds, dsLabel);
+    } catch (err) {
+      // One datasource the emitter cannot handle loses its own view and metric view,
+      // with the reason on the checklist — not every datasource in the group. Its
+      // half-written files go too, so the pack never ships a view with no metric view.
+      for (const key of [...files.keys()]) if (!filesBefore.has(key)) files.delete(key);
+      viewsByDatasource.set(ds.id, null);
+      notes.review.push(
+        `${dsLabel}: could not be converted — ${err instanceof Error ? err.message : String(err)}; ` +
+          'no view or metric view was emitted for it (report this with the workbook)',
+      );
+    }
+  }
+
+  function emitDatasource(ds: BiAssetRow, dsLabel: string): void {
     const columns = ctx.columnsByAsset.get(ds.id) ?? [];
     const derivations = ctx.derivationsByAsset.get(ds.id) ?? [];
     const bindings = ctx.bindingsByAsset.get(ds.id) ?? [];
@@ -503,7 +520,7 @@ export function emitSemanticLayer(
 
     if (viewNames.length === 0) {
       notes.review.push(`${dsLabel}: no table or custom SQL relation found — no view or metric view emitted`);
-      continue;
+      return;
     }
     if (viewNames.length > 1) {
       notes.review.push(

@@ -133,3 +133,17 @@ def test_all_field_refs_completeness() -> None:
 def test_all_field_refs_skips_absent_optionals() -> None:
     chart = Chart(type="bar", rows=[FieldRef(field="r1")], cols=[])
     assert [r.field for r in chart.all_field_refs()] == ["r1"]
+
+
+def test_chart_shelves_default_to_empty(lakeview_spec_dict: dict[str, Any]) -> None:
+    """rows/cols default like every other shelf, so a counter authored without
+    them parses instead of raising."""
+    chart = lakeview_spec_dict["worksheets"][1]["chart"]
+    del chart["rows"]
+    del chart["cols"]
+
+    spec = DashboardSpec.model_validate(lakeview_spec_dict)
+
+    kpi = spec.worksheets[1].chart
+    assert kpi.rows == [] and kpi.cols == []
+    assert [r.field for r in kpi.all_field_refs()] == ["Total Sales"]

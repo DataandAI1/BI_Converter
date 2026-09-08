@@ -190,6 +190,115 @@ describe('parseTableauFile — .twbx unzip', () => {
   });
 });
 
+describe('parseTableauFile — input that is not quite what the extension says', () => {
+  it('prefers the workbook inside a .twbx that also packages a .tds, whichever the zip lists first', () => {
+    // A packaged workbook routinely carries its embedded datasources as `Data/**/*.tds`
+    // beside the `.twb`. Taking the first entry that matched either extension read the
+    // datasource and silently converted the workbook as a sheetless .tds.
+    const zipped = Buffer.from(
+      zipSync({
+        'Data/Datasources/published.tds': new Uint8Array(publishedTdsBuf),
+        'sample.twb': new Uint8Array(sampleTwbBuf),
+      }),
+    );
+    const fromTwbx = parseTableauFile('sample.twbx', zipped);
+    expect(fromTwbx).toEqual(parseTableauFile('sample.twb', sampleTwbBuf));
+    expect(fromTwbx[0].sheets.length).toBeGreaterThan(0);
+  });
+
+  it('prefers the shallowest .tds inside a .tdsx', () => {
+    const zipped = Buffer.from(
+      zipSync({
+        'Data/Extracts/other.tds': new Uint8Array(Buffer.from('<datasource name="other"/>')),
+        'published.tds': new Uint8Array(publishedTdsBuf),
+      }),
+    );
+    expect(parseTableauFile('published.tdsx', zipped)).toEqual(
+      parseTableauFile('published.tds', publishedTdsBuf),
+    );
+  });
+
+  it('reads a workbook saved with a UTF-8 byte-order mark', () => {
+    const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), sampleTwbBuf]);
+    expect(parseTableauFile('sample.twb', bom)).toEqual(parseTableauFile('sample.twb', sampleTwbBuf));
+  });
+
+  it('reads a workbook saved as UTF-16 (either byte order)', () => {
+    const text = sampleTwbBuf.toString('utf8');
+    const le = Buffer.from(`﻿${text}`, 'utf16le');
+    const be = Buffer.from(le.map((_, i, arr) => (i % 2 === 0 ? arr[i + 1] : arr[i - 1])));
+    const expected = parseTableauFile('sample.twb', sampleTwbBuf);
+    expect(parseTableauFile('sample.twb', le)).toEqual(expected);
+    expect(parseTableauFile('sample.twb', be)).toEqual(expected);
+  });
+
+  it('names the file and says the package is unreadable when the zip is corrupt', () => {
+    const corrupt = Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(() => parseTableauFile('broken.twbx', corrupt)).toThrow(
+      /'broken\.twbx'.*not a readable zip/,
+    );
+  });
+
+  it('names the file and the position when the XML is truncated', () => {
+    const half = sampleTwbBuf.subarray(0, Math.floor(sampleTwbBuf.length / 2));
+    expect(() => parseTableauFile('half.twb', half)).toThrow(/'half\.twb'.*XML/);
+  });
+
+  it('says an empty file is empty', () => {
+    expect(() => parseTableauFile('empty.twb', Buffer.alloc(0))).toThrow(/'empty\.twb' is empty/);
+  });
+});
+
+describe('parseTableauFile — joined and unioned relations', () => {
+  const twb = (relations: string) => Buffer.from(`<?xml version='1.0' encoding='utf-8' ?>
+<workbook>
+  <datasources>
+    <datasource name='joined' caption='Joined'>
+      <connection class='federated'>
+        <named-connections>
+          <named-connection caption='pg' name='postgres.0def456'>
+            <connection class='postgres' dbname='shop' port='5432' server='db.example.com' />
+          </named-connection>
+        </named-connections>
+        ${relations}
+      </connection>
+      <column datatype='string' name='[region]' role='dimension' type='nominal' />
+    </datasource>
+  </datasources>
+</workbook>`);
+
+  it('keeps every table under a join, not the join node itself', () => {
+    const [doc] = parseTableauFile('joined.twb', twb(`
+        <relation join='inner' type='join'>
+          <clause type='join'><expression op='='><expression op='[orders].[customer_id]' /><expression op='[customers].[id]' /></expression></clause>
+          <relation connection='postgres.0def456' name='orders' table='[public].[orders]' type='table' />
+          <relation connection='postgres.0def456' name='customers' table='[public].[customers]' type='table' />
+        </relation>`));
+    expect(doc.datasources[0].relations).toEqual([
+      { kind: 'table', table: { schema: 'public', object: 'orders' }, connection: 'postgres.0def456' },
+      { kind: 'table', table: { schema: 'public', object: 'customers' }, connection: 'postgres.0def456' },
+    ]);
+  });
+
+  it('flattens nested joins, unions and collections, and keeps custom SQL leaves', () => {
+    const [doc] = parseTableauFile('joined.twb', twb(`
+        <relation type='collection'>
+          <relation join='left' type='join'>
+            <relation type='union' name='all_orders'>
+              <relation connection='postgres.0def456' name='orders_2024' table='[public].[orders_2024]' type='table' />
+              <relation connection='postgres.0def456' name='orders_2025' table='[public].[orders_2025]' type='table' />
+            </relation>
+            <relation connection='postgres.0def456' name='Custom SQL Query' type='text'>SELECT id FROM customers</relation>
+          </relation>
+        </relation>`));
+    expect(doc.datasources[0].relations.map((r) => r.kind === 'table' ? r.table?.object : r.sql)).toEqual([
+      'orders_2024',
+      'orders_2025',
+      'SELECT id FROM customers',
+    ]);
+  });
+});
+
 describe('parseTableauFile — standalone .tds', () => {
   let docs: TableauWorkbookDoc[];
 

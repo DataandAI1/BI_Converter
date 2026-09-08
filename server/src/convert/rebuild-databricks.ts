@@ -1027,7 +1027,19 @@ export function emitTableauGroupAsLakeview(
         emittedSheets.add(sheet.id);
         continue;
       }
-      const plan = planForSheet(sheet, sheetLabel, facts, edges, target.label);
+      let plan: WidgetPlan;
+      try {
+        plan = planForSheet(sheet, sheetLabel, facts, edges, target.label);
+      } catch (err) {
+        // One sheet the planner cannot handle is one checklist line, not a lost
+        // dashboard: the other sheets still get their widgets.
+        claimSheet(sheet, null).review.push(
+          `${sheetLabel}: could not be converted — ${err instanceof Error ? err.message : String(err)}; ` +
+            'no widget was emitted for it (report this with the workbook)',
+        );
+        emittedSheets.add(sheet.id);
+        continue;
+      }
       if (!dsBySheet.has(sheet.id)) {
         // No datasource edge at all: the widget is scaffolded against the group's first
         // datasource, which is a guess about which columns this sheet reads.

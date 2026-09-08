@@ -397,3 +397,52 @@ def resolve_field_references(
         _resolve_worksheet(ws, idx, actions)
     _resolve_shared_filters(spec, indexes, actions)
     return actions
+
+
+def canonicalize_field_names(spec: dict[str, Any]) -> list[FieldResolution]:
+    """The rename half of :func:`resolve_field_references`, in place: every field
+    reference whose name is a case/whitespace/underscore near-miss of exactly one real
+    field is rewritten to that field. Nothing is dropped or derived — a name that
+    matches nothing is left for the authoring cross-check to feed back to the model,
+    which may still declare the calculation it meant. Run inside the authoring loop so
+    a near-miss costs a rename, not a retry."""
+    indexes = {
+        str(ds.get("id")): _index_datasource(ds, derive_date_parts=False)
+        for ds in spec.get("datasources", []) or []
+        if isinstance(ds, dict)
+    }
+    actions: list[FieldResolution] = []
+
+    def rename(holder: dict[str, Any], key: str, idx: _DsIndex, scope: str, where: str) -> None:
+        name = holder.get(key)
+        if not isinstance(name, str):
+            return
+        res = _resolve_name(name, idx)
+        if res.kind == "rename" and res.field:
+            holder[key] = res.field
+            actions.append(FieldResolution(
+                scope, where, idx.ds_id, name, "renamed", res.field,
+                f"matched real field {res.field!r} (case/whitespace-insensitive)",
+            ))
+
+    for ws in spec.get("worksheets", []) or []:
+        if not isinstance(ws, dict):
+            continue
+        idx = indexes.get(str(ws.get("datasource")))
+        if idx is None:
+            continue
+        scope = f"worksheet:{ws.get('id')}"
+        chart = ws.get("chart") or {}
+        for shelf in (*_STRUCTURAL_SHELVES, *_LIST_ENCODINGS):
+            for ref in chart.get(shelf) or []:
+                if isinstance(ref, dict):
+                    rename(ref, "field", idx, scope, shelf)
+        for enc in _SINGLE_ENCODINGS:
+            if isinstance(chart.get(enc), dict):
+                rename(chart[enc], "field", idx, scope, enc)
+        if isinstance(chart.get("sort"), dict):
+            rename(chart["sort"], "by", idx, scope, "sort.by")
+        for flt in ws.get("filters") or []:
+            if isinstance(flt, dict):
+                rename(flt, "field", idx, scope, "filter")
+    return actions

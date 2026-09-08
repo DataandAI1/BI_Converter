@@ -104,6 +104,27 @@ def _gate_field_references(model: DashboardSpec) -> None:
         raise SpecFieldError(errors)
 
 
+def _gate_zone_references(spec: dict[str, Any]) -> None:
+    """A zone naming a worksheet the spec does not define passes the schema (the
+    identifier pattern is all it checks) and surfaced as a KeyError — an anonymous
+    500 — from the compiler's lookup. The authoring path repairs such zones before it
+    gets here; a caller-supplied spec gets the same 422 every other bad reference does."""
+    known = {
+        ws.get("id") for ws in spec.get("worksheets") or [] if isinstance(ws, dict)
+    }
+    dangling = [
+        f"dashboard {dash.get('id')!r} zone {i}: worksheet {zone.get('worksheet')!r} is not defined"
+        for dash in spec.get("dashboards") or []
+        if isinstance(dash, dict)
+        for i, zone in enumerate(dash.get("zones") or [])
+        if isinstance(zone, dict)
+        and zone.get("kind") == "worksheet"
+        and zone.get("worksheet") not in known
+    ]
+    if dangling:
+        raise SpecFieldError(dangling)
+
+
 def _resolve_and_gate(spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Deterministically repair every field reference in ``spec`` (in place), then gate on
     whatever could not be repaired.
@@ -255,6 +276,9 @@ def generate_rebuild(
     # there is no authoring to compare against an observed layout). Folded into the same
     # warnings channel as the compile-time ones, so callers see everything through one key.
     authoring_warnings: list[str] = []
+    # Field-name repairs made INSIDE the authoring loop (a near-miss renamed before the
+    # cross-check), reported alongside the ones made after it.
+    authoring_resolutions: list[dict[str, Any]] = []
 
     if spec is None:
         if llm is None:
@@ -277,6 +301,7 @@ def generate_rebuild(
         spec = authored["spec"]
         translation = authored["translation"]
         authoring_warnings = authored.get("warnings") or []
+        authoring_resolutions = authored.get("field_resolutions") or []
     spec = copy.deepcopy(spec)
 
     if workbook_name is not None:
@@ -287,7 +312,8 @@ def generate_rebuild(
     force_brief_datasources(spec, brief)
 
     assert_valid_spec(spec)
-    resolutions = _resolve_and_gate(spec)
+    _gate_zone_references(spec)
+    resolutions = authoring_resolutions + _resolve_and_gate(spec)
     model = DashboardSpec.model_validate(spec)
 
     spec_json = json.dumps(spec, indent=2, sort_keys=True)

@@ -198,8 +198,11 @@ class Sort(_Model):
 
 class Chart(_Model):
     type: ChartType
-    rows: list[FieldRef]
-    cols: list[FieldRef]
+    # Every shelf defaults to empty. A chart with nothing on rows/cols — a KPI
+    # counter carrying its measure on `label` — may omit them or write them as
+    # []; the schema and the compilers treat the two identically.
+    rows: list[FieldRef] = PField(default_factory=list)
+    cols: list[FieldRef] = PField(default_factory=list)
     color: Optional[FieldRef] = None
     size: Optional[FieldRef] = None
     label: Optional[FieldRef] = None

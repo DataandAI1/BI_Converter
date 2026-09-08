@@ -208,3 +208,25 @@ def test_repairs_leave_a_clean_spec_untouched(canonical_spec_dict: dict[str, Any
     repair_identifiers(canonical_spec_dict)
     repair_zones(canonical_spec_dict)
     assert canonical_spec_dict == before
+
+
+def test_omitted_shelves_are_the_same_as_empty_ones(
+    lakeview_spec_dict: dict[str, Any],
+) -> None:
+    """A KPI counter carries its measure on 'label' and nothing on the shelves.
+    The prompt calls that "empty rows/cols"; a model writes it by leaving the
+    keys out. Both notations say the same thing, so both must validate."""
+    chart = lakeview_spec_dict["worksheets"][1]["chart"]
+    assert chart["type"] == "counter" and chart["rows"] == [] and chart["cols"] == []
+    del chart["rows"]
+    del chart["cols"]
+
+    assert validate_spec(lakeview_spec_dict) == []
+
+
+def test_a_shelf_may_still_not_be_a_non_array(canonical_spec_dict: dict[str, Any]) -> None:
+    """Optional is not untyped — a scalar on a shelf is still a contract error."""
+    canonical_spec_dict["worksheets"][0]["chart"]["rows"] = {"field": "Sales"}
+    errors = validate_spec(canonical_spec_dict)
+    assert len(errors) == 1
+    assert errors[0].startswith("$.worksheets[0].chart.rows:")

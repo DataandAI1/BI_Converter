@@ -16,11 +16,12 @@ import {
 import { LAKEVIEW_WIDGET_TYPES, isPinnedLakeviewSpec } from '../../src/lakeview/format.js';
 import { parseLvdashFile, mapLakeviewDocs } from '../../src/lakeview/parse.js';
 import type { BiAssetRow, BiEdgeRow } from '../../src/bi/grouping.js';
-import type {
-  BiBindingLite,
-  BiColumnRow,
-  BiDerivationRow,
-  BiManifestObject,
+import {
+  fileSafe,
+  type BiBindingLite,
+  type BiColumnRow,
+  type BiDerivationRow,
+  type BiManifestObject,
 } from '../../src/convert/shared.js';
 
 /**
@@ -615,6 +616,21 @@ describe('claimPath — compound extensions (A3)', () => {
       .map((o) => o.file);
     expect(files.sort()).toEqual(paths);
     for (const f of files) expect(ctx.files.has(f!)).toBe(true);
+  });
+});
+
+describe('fileSafe — filename length', () => {
+  it('caps a very long object name so the pack can be written on any filesystem', () => {
+    // A 300-character Tableau dashboard name became a 300-character filename, and the
+    // write failed with ENAMETOOLONG after the conversion had otherwise succeeded.
+    const long = 'Regional Sales Performance by Quarter and Product Category '.repeat(6);
+    const safe = fileSafe(long);
+    expect(safe.length).toBeLessThanOrEqual(100);
+    expect(safe).toMatch(/^[A-Za-z0-9._-]+$/);
+    // Two long names that differ only past the cap still get distinct filenames.
+    expect(fileSafe(`${long}A`)).not.toBe(fileSafe(`${long}B`));
+    // Short names are untouched.
+    expect(fileSafe('Exec Dashboard')).toBe('Exec_Dashboard');
   });
 });
 

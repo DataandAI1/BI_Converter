@@ -70,7 +70,20 @@ export class Notes {
 export const slugify = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'item';
 
-export const fileSafe = (s: string): string => s.replace(/[^a-zA-Z0-9._-]+/g, '_');
+/** The longest stem a pack file may have. Windows caps a full path at 260 characters and
+ *  most filesystems cap one component at 255 bytes; a Tableau name can run past both, and
+ *  a pack that converts and then fails to WRITE is the worst kind of failure. Past the cap
+ *  the stem is truncated and a short hash of the whole name keeps two long names apart. */
+const MAX_FILE_STEM = 100;
+
+export const fileSafe = (s: string): string => {
+  const safe = s.replace(/[^a-zA-Z0-9._-]+/g, '_');
+  if (safe.length <= MAX_FILE_STEM) return safe;
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+  const tag = hash.toString(36).padStart(7, '0');
+  return `${safe.slice(0, MAX_FILE_STEM - tag.length - 1)}_${tag}`;
+};
 
 /** Codebase-wide BI field lookup key: lowercased, surrounding brackets stripped (`[Sales]`
  *  and `Sales` both key to `sales`). Every `physicalByField`-style map in the rebuild

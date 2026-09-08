@@ -588,3 +588,80 @@ def test_ollama_server_error_carries_status_and_body(monkeypatch):
     assert "more system memory" in message
     assert "gemma4:26B" in message
     assert "http://fake-ollama:11434" in message
+
+
+# ---- transient failures and truncation -----------------------------------------
+
+
+def test_claude_truncation_is_named_not_reported_as_bad_json():
+    """A response cut off at max_tokens is not the model 'writing bad JSON' — feeding
+    that back just earns the same truncation again. Name the cause, so the retry
+    prompt asks for a more compact answer."""
+    truncated = _response('{"spec": {"workbook": {"name": "x"}, "worksheets": [')
+    truncated.stop_reason = "max_tokens"
+    client = LlmClient(client=FakeAnthropic(truncated))
+    with pytest.raises(LlmJsonError) as ei:
+        client.call_json(system="s", user_content="u", model="m")
+    message = str(ei.value)
+    assert "max_tokens" in message and "compact" in message
+
+
+def test_ollama_retries_a_transient_server_error_then_succeeds(monkeypatch):
+    """An Ollama 503 while a model loads, or a 500 on a busy box, used to fail the
+    whole build on the first occurrence."""
+    _ollama_env(monkeypatch)
+    calls: list[int] = []
+    slept: list[float] = []
+    monkeypatch.setattr("tableauforge.llm.client._sleep", lambda s: slept.append(s))
+
+    def fake_post(url: str, payload: dict) -> FakeOllamaResponse:
+        calls.append(1)
+        if len(calls) < 3:
+            return FakeOllamaResponse(status_code=503, text='{"error":"loading model"}')
+        return FakeOllamaResponse(body={"message": {"content": '{"ok": true}'}, "done_reason": "stop"})
+
+    out = LlmClient(http_post=fake_post).call_json(system="s", user_content="u", model="m")
+    assert out == {"ok": True}
+    assert len(calls) == 3
+    assert len(slept) == 2
+
+
+def test_ollama_retries_a_connection_error_then_gives_up_with_the_start_hint(monkeypatch):
+    _ollama_env(monkeypatch)
+    calls: list[int] = []
+    monkeypatch.setattr("tableauforge.llm.client._sleep", lambda s: None)
+
+    def fake_post(url: str, payload: dict) -> FakeOllamaResponse:
+        calls.append(1)
+        raise ConnectionError("refused")
+
+    with pytest.raises(OllamaUnavailableError) as ei:
+        LlmClient(http_post=fake_post).call_json(system="s", user_content="u", model="m")
+    assert "ollama serve" in str(ei.value)
+    assert len(calls) == 3
+
+
+def test_ollama_does_not_retry_a_missing_model_or_a_read_timeout(monkeypatch):
+    import httpx
+
+    _ollama_env(monkeypatch, model="nonexistent:1b")
+    monkeypatch.setattr("tableauforge.llm.client._sleep", lambda s: None)
+    calls: list[int] = []
+
+    def missing(url: str, payload: dict) -> FakeOllamaResponse:
+        calls.append(1)
+        return FakeOllamaResponse(status_code=404, text='{"error":"model not found"}')
+
+    with pytest.raises(OllamaUnavailableError):
+        LlmClient(http_post=missing).call_json(system="s", user_content="u", model="m")
+    assert len(calls) == 1
+
+    calls.clear()
+
+    def slow(url: str, payload: dict) -> FakeOllamaResponse:
+        calls.append(1)
+        raise httpx.ReadTimeout("timed out")
+
+    with pytest.raises(OllamaUnavailableError):
+        LlmClient(http_post=slow).call_json(system="s", user_content="u", model="m")
+    assert len(calls) == 1

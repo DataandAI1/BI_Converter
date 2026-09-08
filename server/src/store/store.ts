@@ -48,6 +48,13 @@ export interface RunRow {
   error: string | null;
   /** Set when a caller asked to cancel; the runner checks it between stages. */
   cancel_requested_at: string | null;
+  /** Free-text authoring instructions, persisted beside the brief so a restart can resume
+   *  the run with the same request. */
+  instructions: string | null;
+  /** How many times a server restart has resumed this run mid-flight, so a restart can
+   *  tell a run interrupted once from one that keeps dying with the process. In-process
+   *  forge retries do not count. */
+  attempts: number;
 }
 
 export interface ArtifactRow {
@@ -69,6 +76,11 @@ export interface CreateRunInput {
 /** The JSON-shaped columns, so callers hand over objects and read objects back. */
 export interface RunPatch {
   status?: RunStatus;
+  /** The lane that produced the pack a run holds. Written when the AI lane falls back
+   *  to the deterministic pack, so the run says which lane its artifacts came from. */
+  lane?: RunLane;
+  instructions?: string | null;
+  attempts?: number;
   brief?: unknown;
   spec?: unknown;
   translation?: unknown;
@@ -103,6 +115,17 @@ CREATE INDEX IF NOT EXISTS artifact_run_idx ON artifact(run_id);
 CREATE INDEX IF NOT EXISTS run_created_idx ON run(created_at DESC);
 `;
 
+/**
+ * Columns added after the first release. `CREATE TABLE IF NOT EXISTS` leaves an existing
+ * database's shape alone, so each is applied with its own guarded ALTER: a store created by
+ * an older build keeps its rows and gains the column, rather than every write failing with
+ * "no such column".
+ */
+const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; ddl: string }> = [
+  { table: 'run', column: 'instructions', ddl: 'instructions TEXT' },
+  { table: 'run', column: 'attempts', ddl: 'attempts INTEGER NOT NULL DEFAULT 0' },
+];
+
 function json(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
 }
@@ -128,7 +151,17 @@ export class RunStore {
     // the two sharing a store.
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    // WAL allows one writer at a time. Without a busy timeout a CLI convert racing the
+    // server's own write throws SQLITE_BUSY on the spot — a stuck run for a lock that
+    // would have cleared in milliseconds.
+    this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
+    for (const { table, column, ddl } of ADDED_COLUMNS) {
+      const present = (this.db.pragma(`table_info(${table})`) as Array<{ name: string }>).some(
+        (c) => c.name === column,
+      );
+      if (!present) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
   }
 
   close(): void {
@@ -183,6 +216,9 @@ export class RunStore {
       values.push(value);
     };
     if (patch.status !== undefined) put('status', patch.status);
+    if (patch.lane !== undefined) put('lane', patch.lane);
+    if (patch.instructions !== undefined) put('instructions', patch.instructions);
+    if (patch.attempts !== undefined) put('attempts', patch.attempts);
     if (patch.brief !== undefined) put('brief', json(patch.brief));
     if (patch.spec !== undefined) put('spec', json(patch.spec));
     if (patch.translation !== undefined) put('translation', json(patch.translation));

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from tableauforge.config import (
@@ -75,6 +76,11 @@ def _round_up_context(tokens: int) -> int:
     return max(8192, -(-tokens // 4096) * 4096)
 
 
+class _OllamaTransient(RuntimeError):
+    """Internal: a transport failure worth one more try before it becomes an
+    OllamaUnavailableError."""
+
+
 class LlmJsonError(ValueError):
     """Model response could not be parsed as JSON. Carries the raw text for debugging/retry."""
 
@@ -86,6 +92,19 @@ class LlmJsonError(ValueError):
 #: Module-level so repeated calls reuse one scanner (json.loads builds a fresh
 #: decoder per call).
 _DECODER = json.JSONDecoder()
+
+#: Waits between retries of a transient Ollama failure (a connection refused while
+#: the server starts, a 503 while a model loads, a 500 on a busy box). The Anthropic
+#: SDK retries its own transport and 429/5xx errors; Ollama's transport is ours.
+OLLAMA_RETRY_DELAYS_S: tuple[float, ...] = (2.0, 5.0)
+
+#: How many times the Anthropic SDK may retry a 429/5xx/connection error before the
+#: call fails. Its default (2) is tuned for short calls; a rebuild is one long call
+#: whose failure costs a whole authoring attempt, so it earns more patience.
+ANTHROPIC_MAX_RETRIES = 4
+
+#: Injectable so tests never wait.
+_sleep = time.sleep
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -150,7 +169,9 @@ class LlmClient:
         if self._client is None:
             import anthropic
 
-            self._client = anthropic.Anthropic(api_key=require_api_key())
+            self._client = anthropic.Anthropic(
+                api_key=require_api_key(), max_retries=ANTHROPIC_MAX_RETRIES
+            )
         return self._client
 
     def _request(self, kwargs: dict[str, Any]) -> Any:
@@ -275,7 +296,7 @@ class LlmClient:
         # when the transport itself is injected.
         import httpx
 
-        def send(body: dict[str, Any]) -> Any:
+        def send_once(body: dict[str, Any]) -> Any:
             try:
                 return self._post(f"{base}/api/chat", body)
             except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
@@ -288,11 +309,39 @@ class LlmClient:
                     "back to Claude on the Settings page."
                 ) from exc
             except Exception as exc:  # noqa: BLE001 - anything else means "not reachable"
-                raise OllamaUnavailableError(
+                raise _OllamaTransient(
                     f"Ollama is not reachable at {base} — start it with `ollama serve` "
                     "(https://ollama.com), or switch the provider back to Claude on the "
                     "Settings page."
                 ) from exc
+
+        def send(body: dict[str, Any]) -> Any:
+            """send_once, with a bounded retry over the failures that pass on their
+            own: a refused connection while the server starts, and a 5xx while a
+            model loads or the box is busy. Everything else raises on the spot."""
+            for attempt in range(len(OLLAMA_RETRY_DELAYS_S) + 1):
+                try:
+                    response = send_once(body)
+                except _OllamaTransient as exc:
+                    if attempt == len(OLLAMA_RETRY_DELAYS_S):
+                        raise OllamaUnavailableError(str(exc)) from exc.__cause__
+                    logger.warning(
+                        "ollama unreachable (%s); retrying in %ss (%d/%d)",
+                        exc.__cause__, OLLAMA_RETRY_DELAYS_S[attempt], attempt + 1,
+                        len(OLLAMA_RETRY_DELAYS_S),
+                    )
+                    _sleep(OLLAMA_RETRY_DELAYS_S[attempt])
+                    continue
+                if response.status_code >= 500 and attempt < len(OLLAMA_RETRY_DELAYS_S):
+                    logger.warning(
+                        "ollama answered HTTP %s; retrying in %ss (%d/%d)",
+                        response.status_code, OLLAMA_RETRY_DELAYS_S[attempt], attempt + 1,
+                        len(OLLAMA_RETRY_DELAYS_S),
+                    )
+                    _sleep(OLLAMA_RETRY_DELAYS_S[attempt])
+                    continue
+                return response
+            raise AssertionError("unreachable")  # pragma: no cover
 
         response = send(payload)
         # Older servers and non-reasoning models can reject the `think` field. When
@@ -463,4 +512,20 @@ class LlmClient:
         )
         if not text:
             raise LlmJsonError("model response contained no text blocks", "")
-        return extract_json(text)
+        try:
+            return extract_json(text)
+        except LlmJsonError:
+            if getattr(message, "stop_reason", None) == "max_tokens":
+                # Cut off, not malformed: fed back as "bad JSON" the model just
+                # produces the same truncation again. Say what happened so the
+                # retry asks for something that fits.
+                out_tokens = getattr(usage, "output_tokens", None)
+                raise LlmJsonError(
+                    "the answer was cut off at the max_tokens limit "
+                    f"({kwargs['max_tokens']} tokens{f', {out_tokens} generated' if out_tokens else ''}) "
+                    "before the JSON completed; return a more compact object — fewer "
+                    "worksheets and zones, no optional encodings you do not need, no "
+                    "whitespace",
+                    text,
+                )
+            raise

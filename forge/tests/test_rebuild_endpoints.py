@@ -270,3 +270,17 @@ def test_ollama_server_error_is_a_502_with_its_message(
         assert resp.status_code == 502, f"{route}: {resp.text}"
         assert "HTTP 500" in resp.json()["detail"]
         assert "oom" in resp.json()["detail"]
+
+
+def test_a_caller_supplied_spec_with_a_dangling_zone_is_a_422_not_a_500(client: TestClient) -> None:
+    """The schema only checks the identifier pattern, so a zone naming a worksheet the
+    spec does not define reached the compiler and died as an anonymous KeyError."""
+    spec = copy.deepcopy(VALID_SPEC)
+    spec["dashboards"] = [{
+        "id": "main", "title": "Main", "size": {"width": 1200, "height": 800},
+        "zones": [{"kind": "worksheet", "worksheet": "no_such_worksheet",
+                   "x": 0, "y": 0, "w": 100, "h": 100}],
+    }]
+    res = client.post("/generate-rebuild", json={"brief": BRIEF, "spec_json": spec})
+    assert res.status_code == 422, res.text
+    assert "no_such_worksheet" in res.json()["detail"]

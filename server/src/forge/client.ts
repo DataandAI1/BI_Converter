@@ -329,6 +329,17 @@ export class ForgeClient {
       }
       throw new ForgeError(res.status, message, detail);
     }
-    return res.json();
+    // A 200 whose body is not JSON (a proxy's HTML page, a truncated response) used to
+    // surface as a raw SyntaxError in the run's error column. Name what actually came
+    // back, as a 502 the runner treats as transient — the forge itself may be fine.
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new ForgeError(
+        502,
+        `forge answered ${path} with a body that is not JSON (${text.slice(0, 80).replace(/\s+/g, ' ')}…)`,
+      );
+    }
   }
 }

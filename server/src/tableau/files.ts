@@ -112,15 +112,25 @@ function parseDescriptor(named: XmlNode): BiDescriptor {
   };
 }
 
-function parseRelation(raw: XmlNode): TableauRelationDoc {
+/**
+ * The leaf relations under one `<relation>`. A joined, unioned or object-model
+ * (`type='collection'`) datasource carries its tables as NESTED `<relation>` children —
+ * the outer node has no `table` of its own — so reading one level produced a single
+ * tableless relation, every physical table name was lost, and the datasource emitted no
+ * view at all. The join itself (its clauses) is not modelled: each table becomes its own
+ * view and the checklist says the join is the reader's to rebuild in the dataset SQL.
+ */
+function parseRelations(raw: XmlNode): TableauRelationDoc[] {
   const type = attr(raw, 'type');
   const connection = attr(raw, 'connection') ?? '';
   if (type === 'text') {
     const sql = typeof raw['#text'] === 'string' ? (raw['#text'] as string).trim() : '';
-    return { kind: 'custom_sql', sql, connection };
+    return [{ kind: 'custom_sql', sql, connection }];
   }
+  const children = asArray(raw.relation as XmlNode | XmlNode[] | undefined);
+  if (children.length > 0) return children.flatMap(parseRelations);
   const table = attr(raw, 'table');
-  return { kind: 'table', table: table ? parseTableRef(table) : undefined, connection };
+  return [{ kind: 'table', table: table ? parseTableRef(table) : undefined, connection }];
 }
 
 function parseField(raw: XmlNode): TableauFieldDoc {
@@ -149,8 +159,8 @@ function parseDatasource(raw: XmlNode): TableauDatasourceDoc {
       | undefined,
   );
   const connections = namedConnections.map(parseDescriptor);
-  const relations = asArray(connectionRoot.relation as XmlNode | XmlNode[] | undefined).map(
-    parseRelation,
+  const relations = asArray(connectionRoot.relation as XmlNode | XmlNode[] | undefined).flatMap(
+    parseRelations,
   );
   const fields = asArray(raw.column as XmlNode | XmlNode[] | undefined).map(parseField);
 
@@ -383,22 +393,89 @@ function isZipBuffer(buf: Buffer): boolean {
   return buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04;
 }
 
+/**
+ * The document a package carries. A `.twbx` routinely holds its embedded datasources as
+ * `Data/…/*.tds` beside the `.twb`, and zip entry order is whatever the packager wrote —
+ * so the first entry matching either extension was sometimes the datasource, and the
+ * workbook silently converted as a sheetless `.tds`. Prefer the workbook, then the
+ * shallowest entry, then the name, so the pick depends on content rather than order.
+ */
+function packagedDocumentEntry(names: readonly string[]): string | undefined {
+  const rank = (n: string): [number, number, string] => [
+    /\.twb$/i.test(n) ? 0 : 1,
+    n.split(/[/\\]/).length,
+    n,
+  ];
+  return names
+    .filter((n) => /\.(twb|tds)$/i.test(n))
+    .sort((a, b) => {
+      const [ka, da, na] = rank(a);
+      const [kb, db, nb] = rank(b);
+      return ka - kb || da - db || na.localeCompare(nb);
+    })[0];
+}
+
+/**
+ * Bytes → XML text, honouring a byte-order mark. Tableau writes UTF-8, but a workbook
+ * that passed through an editor or a transfer tool can arrive as UTF-16 either way round
+ * or with a UTF-8 BOM; decoding those as UTF-8 yields text with no `<workbook>` in it.
+ */
+const firstLine = (err: Error): string => err.message.split(/\r?\n/)[0];
+
+export function decodeXmlText(buf: Buffer): string {
+  if (buf.length >= 2) {
+    if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
+    if (buf[0] === 0xfe && buf[1] === 0xff) return buf.subarray(2).swap16().toString('utf16le');
+  }
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    return buf.subarray(3).toString('utf-8');
+  }
+  // No BOM: a UTF-16 file still betrays itself by the NUL between every ASCII byte of
+  // the `<?xml` prolog.
+  if (buf.length >= 4 && buf[0] === 0x3c && buf[1] === 0x00 && buf[2] === 0x3f && buf[3] === 0x00) {
+    return buf.toString('utf16le');
+  }
+  if (buf.length >= 4 && buf[0] === 0x00 && buf[1] === 0x3c && buf[2] === 0x00 && buf[3] === 0x3f) {
+    return Buffer.from(buf).swap16().toString('utf16le');
+  }
+  return buf.toString('utf-8');
+}
+
 /** `.twb`/`.twbx`/`.tds`/`.tdsx` → one `TableauWorkbookDoc` (a lone `.tds`/`.tdsx` yields a
  *  doc with no sheets/dashboards and its single datasource marked `published: true`). */
 export function parseTableauFile(name: string, buf: Buffer): TableauWorkbookDoc[] {
+  if (buf.length === 0) throw new Error(`'${name}' is empty`);
   let xml: string;
   if (isZipBuffer(buf)) {
-    const entries = unzipSync(new Uint8Array(buf));
-    const innerName = Object.keys(entries).find((k) => /\.(twb|tds)$/i.test(k));
+    let entries: ReturnType<typeof unzipSync>;
+    try {
+      entries = unzipSync(new Uint8Array(buf));
+    } catch (err) {
+      // fflate's own message ("invalid zip data") names neither the file nor the likely
+      // cause — a download or upload that stopped short.
+      throw new Error(
+        `'${name}' is not a readable zip package (${err instanceof Error ? err.message : String(err)}) — ` +
+          'the file may be truncated or corrupted; re-export or re-download it',
+      );
+    }
+    const innerName = packagedDocumentEntry(Object.keys(entries));
     if (!innerName) {
       throw new Error(`no .twb/.tds entry found inside packaged Tableau file '${name}'`);
     }
-    xml = strFromU8(entries[innerName]);
+    xml = decodeXmlText(Buffer.from(entries[innerName]));
   } else {
-    xml = buf.toString('utf-8');
+    xml = decodeXmlText(buf);
   }
 
-  const parsed = xmlParser.parse(xml) as XmlNode;
+  let parsed: XmlNode;
+  try {
+    parsed = xmlParser.parse(xml) as XmlNode;
+  } catch (err) {
+    throw new Error(
+      `'${name}' is not well-formed XML (${err instanceof Error ? firstLine(err) : String(err)}) — ` +
+        'the file may be truncated; re-export it from Tableau',
+    );
+  }
   const docName = deriveDocName(name);
 
   if (parsed.workbook !== undefined) {

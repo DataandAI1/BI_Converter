@@ -35,11 +35,15 @@ from tableauforge.llm.client import (
     estimate_prompt_tokens,
 )
 from tableauforge.llm.field_checks import SCHEMA_PLACEHOLDER, _cross_check_fields_multi
+from tableauforge.spec.field_resolution import canonicalize_field_names
 from tableauforge.spec.schema import (
     load_schema,
     normalize_zone_grid,
     prune_unknown_root_keys,
+    repair_enums,
     repair_identifiers,
+    repair_titles,
+    repair_unknown_keys,
     repair_zones,
     validate_spec,
 )
@@ -1144,6 +1148,7 @@ def author_rebuild_spec(
     last_errors: list[str] = []
     last_raw: dict[str, Any] | None = None
     repair_warnings: list[str] = []
+    field_resolutions: list[dict[str, Any]] = []
 
     for attempt in range(1, attempts + 1):
         raw: dict[str, Any] | None
@@ -1174,10 +1179,17 @@ def author_rebuild_spec(
                     # by id, so a datasource the model called 'world-indicators'
                     # has to become 'world_indicators' first or it silently fails
                     # to bind and then fails validation for a missing connection.
+                    # Casing first: repair_zones decides what a zone is by its `kind`,
+                    # so 'Text' has to become 'text' before that repair can salvage
+                    # the zone's caption. Then near-miss shelf keys, stray keys and
+                    # duplicate titles — each mechanical to undo, and each formerly a
+                    # whole retry (or, for titles, a compile failure after the last one).
+                    repair_enums(spec)
                     repair_identifiers(spec)
                     repair_zones(spec)
                     normalize_zone_grid(spec)
-                    repair_warnings = trim_overfull_shelves(spec)
+                    repair_warnings = repair_unknown_keys(spec) + trim_overfull_shelves(spec)
+                    repair_titles(spec)
                 force_brief_datasources(spec, brief)
                 errors = validate_spec(spec)
                 if not errors:
@@ -1187,6 +1199,12 @@ def author_rebuild_spec(
                     _reconcile_translation_calcs(
                         spec, raw["translation"], brief_calcs, calc_ds_by_name, target
                     )
+                    # A near-miss field name ('region' for 'Region') is a rename
+                    # the resolver already knows how to make; renaming here means
+                    # the cross-check below only reports names that match nothing.
+                    field_resolutions = [
+                        r.to_dict() for r in canonicalize_field_names(spec)
+                    ]
                 if not errors:
                     # Language is checked by _calc_language_errors below.
                     errors = _cross_check_fields_multi(
@@ -1217,6 +1235,7 @@ def author_rebuild_spec(
                 "spec": raw["spec"],
                 "translation": raw["translation"],
                 "warnings": repair_warnings + fidelity,
+                "field_resolutions": field_resolutions,
             }
 
         last_errors, last_raw = errors, raw

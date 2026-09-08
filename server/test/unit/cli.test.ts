@@ -94,3 +94,70 @@ describe('bi-converter convert --llm', () => {
     expect(warnings.some((w) => /need review/.test(w))).toBe(true);
   });
 });
+
+describe('bi-converter convert --llm — when the AI lane cannot deliver', () => {
+  it('keeps the deterministic pack as the result when the forge rejects the authoring, and says so', async () => {
+    const failing = Fastify();
+    failing.get('/healthz', async () => ({ status: 'ok', version: 'test' }));
+    failing.post('/generate-rebuild', async (_req, reply) =>
+      reply.status(422).send({ detail: 'rebuild authoring failed', errors: ['worksheet x: unknown field'] }),
+    );
+    const failingUrl = await failing.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const stderr: string[] = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      let code: number;
+      try {
+        code = await main([
+          'convert', path.join(FIXTURES, 'sample.twb'), '--llm', '--forge', failingUrl,
+          '--out', path.join(dir, 'pack2'),
+        ]);
+      } finally {
+        process.stderr.write = orig;
+      }
+      expect(code).toBe(0);
+
+      const { rows, artifacts } = runs();
+      expect(rows[0]).toMatchObject({ lane: 'deterministic', status: 'succeeded' });
+      expect(artifacts(rows[0].id).some((a) => a.kind === 'lvdash')).toBe(true);
+      expect(artifacts(rows[0].id).some((a) => a.path.includes('authored'))).toBe(false);
+      expect(stderr.join('')).toMatch(/AI-authored lane failed.*unknown field/);
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('fails the run with a clear message when the forge disappears mid-run, keeping the pack', async () => {
+    const vanishing = Fastify();
+    vanishing.get('/healthz', async () => ({ status: 'ok', version: 'test' }));
+    vanishing.post('/generate-rebuild', async (req) => {
+      req.raw.socket.destroy();
+      return {};
+    });
+    const url = await vanishing.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (() => true) as typeof process.stderr.write;
+      let code: number;
+      try {
+        code = await main([
+          'convert', path.join(FIXTURES, 'sample.twb'), '--llm', '--forge', url,
+          '--out', path.join(dir, 'pack3'),
+        ]);
+      } finally {
+        process.stderr.write = orig;
+      }
+      expect(code).toBe(3);
+      const { rows, artifacts } = runs();
+      expect(rows[0].status).toBe('failed');
+      expect(rows[0].error).toMatch(/forge/);
+      expect(artifacts(rows[0].id).length).toBeGreaterThan(0);
+    } finally {
+      await vanishing.close();
+    }
+  });
+});

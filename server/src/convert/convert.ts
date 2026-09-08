@@ -4,6 +4,7 @@ import { emitTableauGroupAsLakeview } from './rebuild-databricks.js';
 import { DEPLOY_PY, bundleYaml } from '../deploy/databricks-deploy.js';
 import { resolveBindings, type SourceMapping } from '../bind/resolve.js';
 import type { IngestResult } from '../ingest/adapter.js';
+import type { BiAssetRow } from '../bi/grouping.js';
 import {
   countsOf,
   slugify,
@@ -91,7 +92,7 @@ export function convertToLakeviewPack(
       }
       continue;
     }
-    emitTableauGroupAsLakeview(ctx, top, own, slugFor(top.name));
+    emitGroupIsolated(ctx, top, own, slugFor(top.name), warnings);
   }
 
   // Pack-level deploy artifacts ride every pack — including one where no group emitted a
@@ -131,6 +132,46 @@ export function convertToLakeviewPack(
     warnings,
     filename: `bi_converter_databricks_${slugify(opts.sourceName)}_${stamp}.zip`,
   };
+}
+
+/**
+ * Emit one group, and contain whatever it throws. A workbook the emitter cannot handle —
+ * a shape the parser never saw, a bug on one calc — used to take every other workbook in
+ * the input down with it, including ones already fully emitted. Now the group's objects
+ * are reported as skipped with the reason, its half-written files are discarded so the
+ * pack never ships a partial folder, and the rest of the pack is unaffected. The run
+ * warning that follows is not an `info:` note, so the run shows as needing review.
+ */
+function emitGroupIsolated(
+  ctx: Parameters<typeof emitTableauGroupAsLakeview>[0],
+  top: BiAssetRow,
+  own: BiAssetRow[],
+  slug: string,
+  warnings: string[],
+): void {
+  const filesBefore = new Set(ctx.files.keys());
+  const objectsBefore = ctx.objects.length;
+  try {
+    emitTableauGroupAsLakeview(ctx, top, own, slug);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    for (const key of [...ctx.files.keys()]) {
+      if (!filesBefore.has(key) && key.startsWith(`${slug}/`)) ctx.files.delete(key);
+    }
+    ctx.objects.splice(objectsBefore);
+    const note = `${top.name}: could not be converted — ${reason}`;
+    for (const a of [top, ...own]) {
+      ctx.objects.push({
+        fqn: a.fqn,
+        asset_type: a.asset_type,
+        system: a.system_name,
+        file: null,
+        status: 'skipped',
+        notes: [note],
+      });
+    }
+    warnings.push(`${note} (the rest of the pack is unaffected; report this with the workbook)`);
+  }
 }
 
 /** Zip a pack's files, ordered by path so the bytes depend on content, not iteration. */

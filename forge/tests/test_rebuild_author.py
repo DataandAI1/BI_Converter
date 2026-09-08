@@ -627,14 +627,16 @@ def test_retry_keeps_the_previous_attempt_when_it_fits(monkeypatch):
     only under real budget pressure, never as a blanket rule."""
     monkeypatch.setenv("TABLEAUFORGE_PROVIDER", "ollama")
     broken = copy.deepcopy(VALID_SPEC)
-    broken["worksheets"][0]["datasource_id"] = "no_such_ds"
+    # A stray key would now be pruned rather than retried; a field that matches
+    # nothing is still the model's to fix.
+    broken["worksheets"][0]["chart"]["cols"] = [{"field": "no_such_field"}]
     llm = FakeLlm([{"spec": broken, "translation": VALID_TRANSLATION}, _envelope()])
     _author(llm)
 
     retry_payload = json.loads(llm.calls[1]["user_content"])
-    assert retry_payload["previous_attempt"]["spec"]["worksheets"][0][
-        "datasource_id"
-    ] == "no_such_ds"
+    assert retry_payload["previous_attempt"]["spec"]["worksheets"][0]["chart"]["cols"] == [
+        {"field": "no_such_field"}
+    ]
 
 
 def test_shelf_caps_match_the_schema():
@@ -679,3 +681,123 @@ def test_trimmed_shelves_reach_the_caller_as_build_warnings():
     ]
     result = _author(FakeLlm([envelope]))
     assert any("put 8 fields on 'cols'" in w for w in result["warnings"])
+
+
+# ---- repairs that used to cost a retry (or the whole run) ---------------------
+
+
+def test_near_miss_field_names_are_renamed_not_retried():
+    """A model writing 'region' or 'Total  sales' for a real field burns a retry on a
+    repair the resolver already knows how to make. Rename before the cross-check."""
+    near = copy.deepcopy(VALID_SPEC)
+    near["worksheets"][0]["chart"]["cols"] = [{"field": "region"}]
+    near["worksheets"][0]["chart"]["color"] = {"field": "total  sales", "aggregation": "sum"}
+    near["worksheets"][0]["filters"] = [{"field": "REGION", "filter_type": "categorical"}]
+    llm = FakeLlm([_envelope(spec=near)])
+    result = _author(llm)
+    assert len(llm.calls) == 1
+    chart = result["spec"]["worksheets"][0]["chart"]
+    assert chart["cols"] == [{"field": "Region"}]
+    assert chart["color"]["field"] == "Total Sales"
+    assert result["spec"]["worksheets"][0]["filters"][0]["field"] == "Region"
+    assert any(r["action"] == "renamed" for r in result["field_resolutions"])
+
+
+def test_a_field_that_matches_nothing_is_still_fed_back():
+    """Rename is a repair; inventing a field is not. An unmatched shelf reference still
+    costs a retry with the error fed back, exactly as before."""
+    bad = copy.deepcopy(VALID_SPEC)
+    bad["worksheets"][0]["chart"]["cols"] = [{"field": "Nonexistent"}]
+    llm = FakeLlm([_envelope(spec=bad), _envelope()])
+    _author(llm)
+    assert len(llm.calls) == 2
+
+
+def test_enum_casing_is_normalized_not_retried():
+    cased = copy.deepcopy(VALID_SPEC)
+    cased["worksheets"][0]["chart"]["type"] = "Bar"
+    cased["worksheets"][0]["chart"]["rows"][0]["aggregation"] = "SUM"
+    cased["datasources"][0]["fields"][0]["role"] = "Dimension"
+    cased["datasources"][0]["kind"] = "Live_Database"
+    cased["dashboards"][0]["zones"][0]["kind"] = "Worksheet"
+    llm = FakeLlm([_envelope(spec=cased)])
+    result = _author(llm)
+    assert len(llm.calls) == 1
+    spec = result["spec"]
+    assert spec["worksheets"][0]["chart"]["type"] == "bar"
+    assert spec["worksheets"][0]["chart"]["rows"][0]["aggregation"] == "sum"
+    assert spec["dashboards"][0]["zones"][0]["kind"] == "worksheet"
+
+
+def test_shelf_aliases_and_stray_chart_keys_are_repaired_and_reported():
+    """`columns` for `cols`, `x`/`y` for the axes, and a key the schema does not know:
+    each used to be an additionalProperties error and a retry."""
+    aliased = copy.deepcopy(VALID_SPEC)
+    chart = aliased["worksheets"][0]["chart"]
+    chart["columns"] = chart.pop("cols")
+    chart["y"] = chart.pop("rows")
+    chart["legend"] = True
+    aliased["worksheets"][0]["description"] = "a stray key"
+    llm = FakeLlm([_envelope(spec=aliased)])
+    result = _author(llm)
+    assert len(llm.calls) == 1
+    repaired = result["spec"]["worksheets"][0]["chart"]
+    assert repaired["cols"] == [{"field": "Region"}]
+    assert repaired["rows"] == [{"field": "Sales", "aggregation": "sum"}]
+    assert "legend" not in repaired and "columns" not in repaired and "y" not in repaired
+    assert "description" not in result["spec"]["worksheets"][0]
+    assert any("legend" in w for w in result["warnings"])
+
+
+def test_duplicate_worksheet_titles_are_disambiguated_before_the_compiler_sees_them():
+    """Titles are not schema-checked, so two 'Sales' worksheets passed every authoring
+    gate and died in the compiler with every retry already spent."""
+    dup = copy.deepcopy(VALID_SPEC)
+    second = copy.deepcopy(dup["worksheets"][0])
+    second["id"] = "sales_by_region_2"
+    dup["worksheets"].append(second)
+    dup["dashboards"][0]["zones"].append(
+        {"kind": "worksheet", "worksheet": "sales_by_region_2", "x": 0, "y": 50, "w": 100, "h": 50}
+    )
+    dup["dashboards"][0]["zones"][0]["h"] = 50
+    llm = FakeLlm([_envelope(spec=dup)])
+    result = _author(llm)
+    titles = [ws["title"] for ws in result["spec"]["worksheets"]]
+    assert titles == ["Sales by Region", "Sales by Region (2)"]
+    from tableauforge.compiler.lakeview import compile_lakeview_parts
+    from tableauforge.spec.models import DashboardSpec
+
+    compile_lakeview_parts(DashboardSpec.model_validate(result["spec"]))
+
+
+def test_a_truncated_answer_tells_the_model_to_be_more_compact():
+    """A response cut off at max_tokens is retried with a message that names the
+    cause, not a generic 'not valid JSON'."""
+    llm = FakeLlm([
+        LlmJsonError(
+            "the answer was cut off at the max_tokens limit (32000 tokens) before the JSON "
+            "completed; return a more compact object",
+            '{"spec": {"work',
+        ),
+        _envelope(),
+    ])
+    _author(llm)
+    assert len(llm.calls) == 2
+    retry_payload = json.loads(llm.calls[1]["user_content"])
+    assert any("cut off" in e and "compact" in e for e in retry_payload["validation_errors"])
+
+
+def test_a_text_zone_with_cased_kind_keeps_its_caption():
+    """repair_zones keys on `kind == "text"`; with enum repair running after it, a zone
+    written as {"kind": "Text", "content": ...} lost its caption and became blank."""
+    cased = copy.deepcopy(VALID_SPEC)
+    cased["dashboards"][0]["zones"][0]["h"] = 80
+    cased["dashboards"][0]["zones"].append(
+        {"kind": "Text", "content": "Q3 summary", "x": 0, "y": 80, "w": 100, "h": 20}
+    )
+    llm = FakeLlm([_envelope(spec=cased)])
+    result = _author(llm)
+    assert len(llm.calls) == 1
+    zone = result["spec"]["dashboards"][0]["zones"][1]
+    assert zone["kind"] == "text"
+    assert zone["text"] == "Q3 summary"

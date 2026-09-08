@@ -318,12 +318,43 @@ async function cmdConvert(args: Args): Promise<number> {
       instructions: str(args.flags, 'instructions'),
     });
     await runner.settled();
+    // A parked queue would re-try the forge on a timer; this process is about to exit.
+    runner.close();
 
-    const finished = store.getRun(run.id)!;
+    let finished = store.getRun(run.id)!;
+    if (finished.status === 'queued') {
+      // The drain parked: the forge answered the health check and then went away. A
+      // server would keep the run queued and retry; a one-shot command cannot, so the
+      // run is failed here with a reason rather than left queued for a server to pick up
+      // hours later and spend tokens on unasked.
+      store.updateRun(run.id, {
+        status: 'failed',
+        error: `forge unreachable at ${forgeUrl(args)} — it stopped answering mid-run`,
+      });
+      finished = store.getRun(run.id)!;
+      process.stderr.write(
+        `error: the forge at ${forgeUrl(args)} stopped answering mid-run — start it again and ` +
+          `re-run, or re-run with --no-llm.\nThe deterministic pack was written to ${outDir} regardless.\n`,
+      );
+      return 3;
+    }
     if (finished.status !== 'succeeded') {
       process.stderr.write(`error: run ${run.id} ${finished.status}: ${finished.error ?? ''}\n`);
       process.stderr.write(`The deterministic pack is still in ${outDir}.\n`);
       return 1;
+    }
+    if (finished.lane === 'deterministic') {
+      // The AI lane gave up and the run fell back to the pack written above (runner.ts
+      // giveUp). That is a converted workbook with a warning to read, not a failure.
+      process.stdout.write(
+        `Converted ${name} (run ${run.id}) -> ${outDir}\n` +
+          'The AI-authored lane did not deliver; this is the deterministic pack. ' +
+          'See the warning below for why.\n',
+      );
+      for (const w of JSON.parse(finished.warnings ?? '[]') as string[]) {
+        process.stderr.write(`warning: ${w}\n`);
+      }
+      return 0;
     }
 
     // The authored dashboard replaces the deterministic one; everything else in the pack —

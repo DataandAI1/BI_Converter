@@ -44,6 +44,28 @@ function newRun(lane: 'llm' | 'deterministic' = 'llm') {
   return store.createRun({ sourceKind: 'file', workbookName: 'wb', lane });
 }
 
+/** A run that already holds its deterministic pack, as every AI-lane run does by the
+ *  time it is enqueued. */
+function newRunWithPack() {
+  const run = newRun();
+  const file = path.join(dir, 'packs', run.id, 'wb', 'dashboards', 'Main.lvdash.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{}');
+  store.addArtifact(run.id, file, 'lvdash', 2);
+  return run;
+}
+
+const transportError = (code = 'ECONNREFUSED') =>
+  Object.assign(new TypeError('fetch failed'), { cause: { code } });
+
+const until = async (pred: () => boolean, ms = 2_000): Promise<void> => {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error('condition not met in time');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bi-converter-runner-'));
   store = new RunStore(dir);
@@ -132,7 +154,7 @@ describe('Runner — the happy path', () => {
 });
 
 describe('Runner — failure', () => {
-  it('marks a run failed with the forge error message', async () => {
+  it('marks a run that holds no pack failed with the forge error message', async () => {
     const runner = new Runner({
       store,
       forge: fakeForge(async () => {
@@ -148,7 +170,35 @@ describe('Runner — failure', () => {
     expect(after.error).toBe('generation failed');
   });
 
-  it('persists the validation report from a 422 so a failed run still explains itself', async () => {
+  /**
+   * The deterministic pack is written before the forge is ever asked (spec: "a forge
+   * that never answers still leaves a working conversion"). A run that already holds it
+   * has converted; the AI lane not improving on it is a warning a person should read,
+   * not a failed conversion with the pack hidden behind a red badge.
+   */
+  it('falls back to the deterministic pack when authoring fails, and says so as a warning', async () => {
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        throw new ForgeError(422, 'generation failed — worksheet x: unknown field');
+      }),
+    });
+    const run = newRunWithPack();
+    store.updateRun(run.id, { warnings: ['info: baseline note'] });
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    const after = store.getRun(run.id)!;
+    expect(after.status).toBe('succeeded');
+    expect(after.lane).toBe('deterministic');
+    expect(after.error).toBeNull();
+    const warnings = JSON.parse(after.warnings!) as string[];
+    expect(warnings).toContain('info: baseline note');
+    expect(warnings.some((w) => /AI-authored lane failed.*unknown field.*deterministic pack/.test(w))).toBe(true);
+    expect(runNeedsReview(after)).toBe(true);
+  });
+
+  it('persists the validation report from a 422 so a fallen-back run still explains itself', async () => {
     const report = { passed: false, layers: [{ layer: 2, name: 'lakeview', passed: false, errors: ['bad'] }] };
     const runner = new Runner({
       store,
@@ -156,11 +206,180 @@ describe('Runner — failure', () => {
         throw new ForgeError(422, 'generation failed', { detail: 'generation failed', report });
       }),
     });
-    const run = newRun();
+    const run = newRunWithPack();
     runner.enqueue({ runId: run.id, brief: BRIEF });
     await runner.settled();
 
     expect(JSON.parse(store.getRun(run.id)!.validation!)).toEqual(report);
+    expect(store.getRun(run.id)!.status).toBe('succeeded');
+  });
+
+  it('treats a forge answer with no spec as an authoring failure, never as success', async () => {
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => result({ spec: undefined })),
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    const after = store.getRun(run.id)!;
+    expect(after.lane).toBe('deterministic');
+    expect(after.spec).toBeNull();
+    expect(JSON.parse(after.warnings!).join(' ')).toMatch(/no spec/);
+  });
+
+  it('retries a transient forge status (503, 502, 429) before giving up on the AI lane', async () => {
+    let calls = 0;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        if (calls === 1) throw new ForgeError(503, 'Ollama is not reachable');
+        if (calls === 2) throw new ForgeError(502, 'Claude API call failed: overloaded');
+        if (calls === 3) throw new ForgeError(429, 'rate limited');
+        return result();
+      }),
+      retryDelaysMs: [0, 0, 0],
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    expect(calls).toBe(4);
+    const after = store.getRun(run.id)!;
+    expect(after.status).toBe('succeeded');
+    expect(after.lane).toBe('llm');
+  });
+
+  it('does not retry a rejection the model earned (422) or the build timeout (504)', async () => {
+    for (const err of [new ForgeError(422, 'rebuild authoring failed'), new ForgeError(504, 'forge build timed out after 30 min')]) {
+      let calls = 0;
+      const runner = new Runner({
+        store,
+        forge: fakeForge(async () => {
+          calls += 1;
+          throw err;
+        }),
+        retryDelaysMs: [0, 0],
+      });
+      const run = newRunWithPack();
+      runner.enqueue({ runId: run.id, brief: BRIEF });
+      await runner.settled();
+      expect(calls).toBe(1);
+    }
+  });
+
+  it('gives up after the retry budget and falls back, naming the last error', async () => {
+    let calls = 0;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        throw new ForgeError(503, 'still loading');
+      }),
+      retryDelaysMs: [0, 0],
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    expect(calls).toBe(3);
+    const after = store.getRun(run.id)!;
+    expect(after.status).toBe('succeeded');
+    expect(after.lane).toBe('deterministic');
+    expect(JSON.parse(after.warnings!).join(' ')).toMatch(/still loading/);
+  });
+
+  it('stops retrying when the run is cancelled during the wait', async () => {
+    let runner!: Runner;
+    let calls = 0;
+    const run = newRunWithPack();
+    runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        queueMicrotask(() => runner.cancel(run.id));
+        throw new ForgeError(503, 'not yet');
+      }),
+      retryDelaysMs: [50, 50, 50],
+    });
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    expect(calls).toBe(1);
+    expect(store.getRun(run.id)!.status).toBe('cancelled');
+  });
+
+  it('classifies a connection dropped mid-response as the forge going away, not as a bad run', async () => {
+    let calls = 0;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new TypeError('terminated'), {
+            cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+          });
+        }
+        return result();
+      }),
+      resumeDelaysMs: [1],
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+    expect(store.getRun(run.id)!.status).toBe('queued');
+
+    await until(() => store.getRun(run.id)!.status === 'succeeded');
+    expect(calls).toBe(2);
+    runner.close();
+  });
+
+  it('resumes a parked queue by itself once the forge is back, without a new enqueue', async () => {
+    let up = false;
+    let calls = 0;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        if (!up) throw transportError();
+        return result();
+      }),
+      resumeDelaysMs: [1, 1, 1],
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+    expect(store.getRun(run.id)!.status).toBe('queued');
+
+    await until(() => calls >= 3);
+    up = true;
+    await until(() => store.getRun(run.id)!.status === 'succeeded');
+    runner.close();
+  });
+
+  it('survives a store that fails while marking the outcome, leaving the run failed rather than compiling', async () => {
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => result()),
+    });
+    const run = newRunWithPack();
+    const original = store.updateRun.bind(store);
+    let armed = true;
+    store.updateRun = ((id, patch) => {
+      if (armed && patch.status === 'succeeded') {
+        armed = false;
+        throw new Error('SQLITE_BUSY: database is locked');
+      }
+      return original(id, patch);
+    }) as typeof store.updateRun;
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    const after = store.getRun(run.id)!;
+    expect(after.status).not.toBe('compiling');
+    expect(['succeeded', 'failed']).toContain(after.status);
   });
 
   it('does not fail the run when the forge is unreachable — it reverts to queued', async () => {
@@ -266,23 +485,104 @@ describe('Runner — cancellation', () => {
 });
 
 describe('Runner — reconciliation after a restart', () => {
-  it('fails a run left mid-flight rather than leaving it looking active', () => {
-    const run = newRun();
+  it('resumes a run left mid-flight from its persisted brief rather than failing it', async () => {
+    const run = newRunWithPack();
+    store.updateRun(run.id, { status: 'compiling', brief: BRIEF, instructions: 'keep it flat' });
+    let seen: Record<string, unknown> | undefined;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async (body) => {
+        seen = body as Record<string, unknown>;
+        return result();
+      }),
+    });
+    runner.reconcile();
+    await runner.settled();
+
+    const after = store.getRun(run.id)!;
+    expect(after.status).toBe('succeeded');
+    expect(after.error).toBeNull();
+    expect(seen!.brief).toEqual(BRIEF);
+    expect(seen!.instructions).toBe('keep it flat');
+    expect(JSON.parse(after.warnings!).join(' ')).toMatch(/restarted/);
+  });
+
+  it('resumes a queued run whose brief was persisted by a previous process', async () => {
+    const run = newRunWithPack();
+    store.updateRun(run.id, { brief: BRIEF });
+    const runner = new Runner({ store, forge: fakeForge(async () => result()) });
+    runner.reconcile();
+    await runner.settled();
+
+    expect(store.getRun(run.id)!.status).toBe('succeeded');
+  });
+
+  it('counts restart resumes, not the forge retries a parked queue makes', async () => {
+    // Three park-and-retry rounds while the forge is down must not spend the restart
+    // budget: a later genuine restart still resumes the run.
+    let up = false;
+    let calls = 0;
+    const runner = new Runner({
+      store,
+      forge: fakeForge(async () => {
+        calls += 1;
+        if (!up) throw transportError();
+        return result();
+      }),
+      resumeDelaysMs: [1],
+    });
+    const run = newRunWithPack();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await until(() => calls >= 4);
+    runner.close();
+    expect(store.getRun(run.id)!.attempts).toBe(0);
+
+    // A restart finds it mid-flight: resumed, and the resume is what gets counted.
     store.updateRun(run.id, { status: 'compiling' });
+    up = true;
+    const restarted = new Runner({ store, forge: fakeForge(async () => result()) });
+    restarted.reconcile();
+    await restarted.settled();
+    const after = store.getRun(run.id)!;
+    expect(after.status).toBe('succeeded');
+    expect(after.attempts).toBe(1);
+  });
+
+  it('fails a mid-flight run that has already been resumed too often, and says why', () => {
+    const run = newRun();
+    store.updateRun(run.id, { status: 'compiling', brief: BRIEF, attempts: 2 });
     new Runner({ store, forge: fakeForge(async () => result()) }).reconcile();
 
     const after = store.getRun(run.id)!;
     expect(after.status).toBe('failed');
-    expect(after.error).toContain('restarted');
+    expect(after.error).toMatch(/restarted.*3 times/);
   });
 
-  it('fails a queued run whose brief this process never saw, and says why', () => {
+  it('fails a queued run with no brief to resume from, and says why', () => {
     const run = newRun();
     new Runner({ store, forge: fakeForge(async () => result()) }).reconcile();
 
     const after = store.getRun(run.id)!;
     expect(after.status).toBe('failed');
     expect(after.error).toContain('start it again');
+  });
+
+  /**
+   * The production sequence: `buildServer` constructs a Runner and reconciles it before
+   * any run exists, so the startup drain finds an empty queue. A drain that finishes
+   * without ever awaiting must still leave the runner able to start the next one --
+   * otherwise every AI-lane run enqueued afterwards sits in 'queued' forever, with no
+   * error to explain it.
+   */
+  it('still drains a run enqueued after a reconcile that found nothing to do', async () => {
+    const runner = new Runner({ store, forge: fakeForge(async () => result()) });
+    runner.reconcile();
+
+    const run = newRun();
+    runner.enqueue({ runId: run.id, brief: BRIEF });
+    await runner.settled();
+
+    expect(store.getRun(run.id)!.status).toBe('succeeded');
   });
 
   it('leaves terminal runs alone', () => {
