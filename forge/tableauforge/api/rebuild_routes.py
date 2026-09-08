@@ -21,7 +21,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from tableauforge.api.store import ArtifactStore
-from tableauforge.config import MissingApiKeyError, OllamaUnavailableError, Settings
+from tableauforge.config import (
+    MissingApiKeyError,
+    OllamaRequestError,
+    OllamaUnavailableError,
+    Settings,
+)
 from tableauforge.rebuild import GenerationFailed, generate_rebuild
 from tableauforge.llm.usage import merge_usage
 
@@ -128,6 +133,10 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
             )
         except OllamaUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
+        except OllamaRequestError as exc:
+            # Ollama answered with an error of its own (an out-of-memory 500, a rejected
+            # option). Its text is the only diagnostic there is — a bare 500 here hid it.
+            raise HTTPException(status_code=502, detail=str(exc))
         except MissingApiKeyError:
             raise HTTPException(status_code=503, detail=_NO_KEY_DETAIL)
         except ANTHROPIC_API_ERRORS as exc:
@@ -172,6 +181,8 @@ def build_rebuild_router(store: ArtifactStore, settings: Any) -> APIRouter:
                 )
             except OllamaUnavailableError as exc:
                 raise HTTPException(status_code=503, detail=str(exc))
+            except OllamaRequestError as exc:
+                raise HTTPException(status_code=502, detail=str(exc))
             except MissingApiKeyError:
                 raise HTTPException(status_code=503, detail=_NO_KEY_DETAIL)
             except ANTHROPIC_API_ERRORS as exc:

@@ -566,3 +566,25 @@ def test_ollama_truncation_error_reports_the_budget_arithmetic(monkeypatch):
     assert "14895" in message and "13658" in message
     # 14,895 + 2x13,658 = 42,211 -> the next 4,096 boundary.
     assert "45056" in message
+
+
+def test_ollama_server_error_carries_status_and_body(monkeypatch):
+    """A 500 from Ollama (an out-of-memory load, a rejected option) is neither
+    "start ollama serve" nor "pull the model": the server's own text is the only
+    diagnostic, and it must reach the caller rather than vanish into a bare 500."""
+    from tableauforge.config import OllamaRequestError
+
+    _ollama_env(monkeypatch, model="gemma4:26B")
+
+    def fake_post(url: str, payload: dict) -> FakeOllamaResponse:
+        return FakeOllamaResponse(
+            status_code=500, text='{"error":"model requires more system memory (17.9 GiB)"}'
+        )
+
+    with pytest.raises(OllamaRequestError) as ei:
+        LlmClient(http_post=fake_post).call_json(system="s", user_content="u", model="m")
+    message = str(ei.value)
+    assert "HTTP 500" in message
+    assert "more system memory" in message
+    assert "gemma4:26B" in message
+    assert "http://fake-ollama:11434" in message

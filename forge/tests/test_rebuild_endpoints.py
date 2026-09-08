@@ -249,3 +249,24 @@ def test_extra_fields_rejected(client: TestClient) -> None:
         json={"brief": BRIEF, "spec_json": VALID_SPEC, "surprise": True},
     )
     assert resp.status_code == 422
+
+
+def test_ollama_server_error_is_a_502_with_its_message(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ollama's own HTTP failure must not surface as an anonymous 500: the route maps
+    it to a 502 that carries the text Ollama returned."""
+    from tableauforge.config import OllamaRequestError
+
+    fake = FakeLlm(
+        [OllamaRequestError("Ollama at http://x:11434 rejected the request (HTTP 500): oom")]
+    )
+    monkeypatch.setattr(rebuild_routes, "_authoring_llm", lambda: fake)
+    for route in ("/draft-rebuild-spec", "/generate-rebuild"):
+        fake._responses = [
+            OllamaRequestError("Ollama at http://x:11434 rejected the request (HTTP 500): oom")
+        ]
+        resp = client.post(route, json={"brief": BRIEF})
+        assert resp.status_code == 502, f"{route}: {resp.text}"
+        assert "HTTP 500" in resp.json()["detail"]
+        assert "oom" in resp.json()["detail"]

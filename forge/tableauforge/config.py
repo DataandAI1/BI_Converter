@@ -30,6 +30,24 @@ VALID_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 #: output_config to an unsupported model would 400 the request.
 AVAILABLE_MODELS: tuple[dict, ...] = (
     {
+        "id": "claude-fable-5-1",
+        "label": "Claude Fable 5.1",
+        "description": "Most capable; Fable 5's successor at the same price. Generation can take minutes.",
+        "supports_effort": True,
+    },
+    {
+        "id": "claude-opus-5",
+        "label": "Claude Opus 5",
+        "description": "Very capable at half the Fable price; the best default for most conversions.",
+        "supports_effort": True,
+    },
+    {
+        "id": "claude-sonnet-5",
+        "label": "Claude Sonnet 5",
+        "description": "Fast and balanced; good for quick iterations.",
+        "supports_effort": True,
+    },
+    {
         "id": "claude-fable-5",
         "label": "Claude Fable 5",
         "description": "Most capable; best dashboards. Generation can take minutes.",
@@ -145,6 +163,13 @@ class OllamaUnavailableError(RuntimeError):
     """Raised when the Ollama provider is selected but the local server (or the
     chosen model) can't serve the request. Maps to 503 like MissingApiKeyError —
     a service-level gap, not a server bug."""
+
+
+class OllamaRequestError(RuntimeError):
+    """Raised when Ollama answered a request with an HTTP error other than "model not
+    installed" — an out-of-memory 500, a rejected option, a 503 mid-load. The message
+    carries Ollama's own status and body; the routes map it to a 502 so the caller sees
+    that text instead of an anonymous internal error."""
 
 
 @dataclass(frozen=True)

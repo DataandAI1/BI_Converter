@@ -40,9 +40,73 @@ export interface Artifact {
   bytes: number;
 }
 
+export type Provider = 'claude' | 'ollama';
+
 export interface Health {
   ok: boolean;
   forge: { ok: boolean; version?: string; url: string };
+  /** Whether the forge has a provider that can author right now, and which. */
+  llm: { ready: boolean; provider: Provider | null; model: string | null };
+}
+
+export interface ForgeModel {
+  id: string;
+  label: string;
+  description: string;
+  supports_effort: boolean;
+}
+
+/** The forge's provider configuration. Secrets come back masked, never in full. */
+export interface Settings {
+  provider: Provider;
+  provider_source: 'runtime' | 'env' | null;
+  ollama_base_url: string;
+  ollama_model: string;
+  ollama_num_ctx: number;
+  llm_ready: boolean;
+  api_key_configured: boolean;
+  api_key_masked: string | null;
+  api_key_source: 'runtime' | 'env' | null;
+  model: string;
+  model_source: 'runtime' | 'env' | null;
+  available_models: ForgeModel[];
+}
+
+export interface SettingsResponse {
+  forge: { ok: boolean; version?: string; url: string };
+  /** null when the forge is not running — there is nothing to configure yet. */
+  settings: Settings | null;
+}
+
+export interface OllamaModel {
+  name: string;
+  parameterSize: string | null;
+  bytes: number;
+}
+
+/** The server that served this page did not answer at all. */
+export class ServerUnreachableError extends Error {
+  constructor() {
+    super(
+      `Cannot reach the BI_Converter server at ${window.location.origin} — it is not running, ` +
+        'or it stopped after this page loaded. Start it with `npx bi-converter serve` ' +
+        '(or `npm run serve -w server`) and reload.',
+    );
+    this.name = 'ServerUnreachableError';
+  }
+}
+
+/**
+ * fetch rejects — the browser's bare "Failed to fetch" — only when no HTTP response came
+ * back at all. Every such case here means the same thing, so say it, rather than hand a
+ * user five words that name nothing.
+ */
+async function request(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch {
+    throw new ServerUnreachableError();
+  }
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -59,8 +123,14 @@ async function json<T>(res: Response): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+const jsonBody = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
 export const api = {
-  health: () => fetch('/api/health').then(json<Health>),
+  health: () => request('/api/health').then(json<Health>),
 
   convert: (body: {
     fileName?: string;
@@ -73,19 +143,14 @@ export const api = {
     lane: 'llm' | 'deterministic';
     mapping?: string;
     instructions?: string;
-  }) =>
-    fetch('/api/convert', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(json<Run>),
+  }) => request('/api/convert', jsonBody('POST', body)).then(json<Run>),
 
-  runs: () => fetch('/api/runs').then(json<{ runs: Run[] }>),
-  run: (id: string) => fetch(`/api/runs/${id}`).then(json<Run>),
+  runs: () => request('/api/runs').then(json<{ runs: Run[] }>),
+  run: (id: string) => request(`/api/runs/${id}`).then(json<Run>),
   cancel: (id: string) =>
-    fetch(`/api/runs/${id}/cancel`, { method: 'POST' }).then(json<{ outcome: string }>),
+    request(`/api/runs/${id}/cancel`, { method: 'POST' }).then(json<{ outcome: string }>),
   artifacts: (id: string) =>
-    fetch(`/api/runs/${id}/artifacts`).then(json<{ artifacts: Artifact[] }>),
+    request(`/api/runs/${id}/artifacts`).then(json<{ artifacts: Artifact[] }>),
   artifactUrl: (id: string) => `/api/artifacts/${id}`,
   packUrl: (runId: string) => `/api/runs/${runId}/pack.zip`,
 
@@ -93,15 +158,27 @@ export const api = {
     id: string,
     body: { host?: string; warehouseId: string; parentPath?: string; publish?: boolean },
   ) =>
-    fetch(`/api/runs/${id}/deploy`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(
+    request(`/api/runs/${id}/deploy`, jsonBody('POST', body)).then(
       json<{
         host: string;
         deployed: Array<{ displayName: string; dashboardId: string; action: string; published: boolean }>;
       }>,
+    ),
+
+  settings: () => request('/api/settings').then(json<SettingsResponse>),
+  saveSettings: (body: {
+    provider: Provider;
+    /** Blank keeps the key the forge already has. */
+    apiKey?: string;
+    model?: string;
+    ollamaBaseUrl?: string;
+    ollamaModel?: string;
+  }) => request('/api/settings', jsonBody('PUT', body)).then(json<SettingsResponse>),
+  clearApiKey: () =>
+    request('/api/settings/api-key', { method: 'DELETE' }).then(json<SettingsResponse>),
+  ollamaModels: (baseUrl: string) =>
+    request(`/api/settings/ollama-models?baseUrl=${encodeURIComponent(baseUrl)}`).then(
+      json<{ models: OllamaModel[] }>,
     ),
 };
 

@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from tableauforge.config import (
+    OllamaRequestError,
     OllamaUnavailableError,
     ollama_base_url_from_env,
     ollama_model_from_env,
@@ -308,7 +309,10 @@ class LlmClient:
             )
         if response.status_code >= 400:
             snippet = str(getattr(response, "text", ""))[:500]
-            raise RuntimeError(f"Ollama request failed (HTTP {response.status_code}): {snippet}")
+            raise OllamaRequestError(
+                f"Ollama at {base} rejected the request for model {model!r} "
+                f"(HTTP {response.status_code}): {snippet}"
+            )
         data = response.json()
         self.usage_calls.append(
             {

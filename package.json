@@ -8,7 +8,9 @@
     "web"
   ],
   "scripts": {
-    "build": "npm run build -w server",
+    "build": "npm run build -w server && npm run build -w web",
+    "serve": "node server/dist/src/cli.js serve",
+    "dev:server": "npm run serve -w server",
     "typecheck": "npm run typecheck -w server",
     "test": "npm test -w server",
     "test:forge": "python -m pytest forge/tests -q",

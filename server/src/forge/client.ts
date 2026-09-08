@@ -107,6 +107,41 @@ export interface DraftRebuildResult {
   llm_usage: Record<string, unknown> | null;
 }
 
+/** One entry of the forge's model catalog — what the Settings picker offers for Claude. */
+export interface ForgeModel {
+  id: string;
+  label: string;
+  description: string;
+  supports_effort: boolean;
+}
+
+/** The forge's provider configuration, as GET /settings reports it. Secrets are masked. */
+export interface ForgeSettings {
+  provider: 'claude' | 'ollama';
+  provider_source: 'runtime' | 'env' | null;
+  ollama_base_url: string;
+  ollama_model: string;
+  ollama_num_ctx: number;
+  /** LLM features work: Ollama needs no key; Claude needs one configured. */
+  llm_ready: boolean;
+  api_key_configured: boolean;
+  api_key_masked: string | null;
+  api_key_source: 'runtime' | 'env' | null;
+  model: string;
+  model_source: 'runtime' | 'env' | null;
+  available_models: ForgeModel[];
+}
+
+export interface SetProviderBody {
+  provider: 'claude' | 'ollama';
+  ollama_base_url?: string;
+  ollama_model?: string;
+  ollama_num_ctx?: number;
+}
+
+/** Settings calls are config writes, not builds: a 30-min budget is the wrong bound. */
+const SETTINGS_TIMEOUT_MS = 15_000;
+
 export class ForgeError extends Error {
   constructor(
     readonly status: number,
@@ -130,7 +165,9 @@ const longRunDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 export class ForgeClient {
   constructor(
-    private readonly baseUrl: string = process.env.FORGE_URL ?? 'http://localhost:4125',
+    // 4126, as everywhere else in this repo; 4125 is another project's forge on the
+    // machine this was ported on, and a stale default here would talk to it silently.
+    private readonly baseUrl: string = process.env.FORGE_URL ?? 'http://127.0.0.1:4126',
     private readonly fetchImpl: FetchLike = undiciFetch,
   ) {}
 
@@ -146,6 +183,36 @@ export class ForgeClient {
       return { ok: false };
     }
   }
+
+  /* ------------------------------------------------------------ settings */
+
+  getSettings(): Promise<ForgeSettings> {
+    return this.request('GET', '/settings', undefined, undefined, SETTINGS_TIMEOUT_MS) as Promise<ForgeSettings>;
+  }
+
+  setProvider(body: SetProviderBody): Promise<ForgeSettings> {
+    return this.request('POST', '/settings/provider', body, undefined, SETTINGS_TIMEOUT_MS) as Promise<ForgeSettings>;
+  }
+
+  setModel(model: string): Promise<ForgeSettings> {
+    return this.request('POST', '/settings/model', { model }, undefined, SETTINGS_TIMEOUT_MS) as Promise<ForgeSettings>;
+  }
+
+  setApiKey(apiKey: string): Promise<ForgeSettings> {
+    return this.request(
+      'POST',
+      '/settings/api-key',
+      { api_key: apiKey },
+      undefined,
+      SETTINGS_TIMEOUT_MS,
+    ) as Promise<ForgeSettings>;
+  }
+
+  clearApiKey(): Promise<ForgeSettings> {
+    return this.request('DELETE', '/settings/api-key', undefined, undefined, SETTINGS_TIMEOUT_MS) as Promise<ForgeSettings>;
+  }
+
+  /* -------------------------------------------------------------- builds */
 
   async draftRebuildSpec(body: DraftRebuildBody, signal?: AbortSignal): Promise<DraftRebuildResult> {
     return (await this.post('/draft-rebuild-spec', body, signal)) as DraftRebuildResult;
@@ -170,7 +237,12 @@ export class ForgeClient {
     return res;
   }
 
-  private async post(
+  private post(path: string, body: unknown, signal?: AbortSignal, timeoutMs?: number): Promise<unknown> {
+    return this.request('POST', path, body, signal, timeoutMs);
+  }
+
+  private async request(
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     body: unknown,
     signal?: AbortSignal,
@@ -183,9 +255,9 @@ export class ForgeClient {
     let res: Awaited<ReturnType<FetchLike>>;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        method,
+        headers: body === undefined ? {} : { 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
         dispatcher: longRunDispatcher,
         signal: combined,
       });

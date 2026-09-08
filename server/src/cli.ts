@@ -15,7 +15,8 @@ import { Runner, runNeedsReview } from './forge/runner.js';
 import { RunStore, type ArtifactKind } from './store/store.js';
 import { authFromEnv, LakeviewClient } from './deploy/lakeview-client.js';
 import { deployPack } from './deploy/deploy.js';
-import { buildServer } from './api/app.js';
+import { fileURLToPath } from 'node:url';
+import { buildServer, resolveWebRoot } from './api/app.js';
 
 /**
  * `bi-converter` (spec §8.1). Three commands: convert a workbook into a pack, deploy a
@@ -133,6 +134,23 @@ async function writePack(outDir: string, files: ReadonlyMap<string, string>): Pr
   }
 }
 
+/** Record a written pack in the store — what `deploy --run` and the web UI read. */
+function registerPack(
+  store: RunStore,
+  runId: string,
+  outDir: string,
+  files: ReadonlyMap<string, string>,
+): void {
+  for (const [rel, content] of files) {
+    store.addArtifact(runId, path.join(outDir, rel), artifactKind(rel), Buffer.byteLength(content, 'utf8'));
+  }
+}
+
+async function writeArtifact(store: RunStore, runId: string, file: string, text: string): Promise<void> {
+  await fs.writeFile(file, text, 'utf8');
+  store.addArtifact(runId, file, 'pack', Buffer.byteLength(text, 'utf8'));
+}
+
 /** What kind of artifact a pack file is, for the store's artifact rows. */
 function artifactKind(rel: string): ArtifactKind {
   if (rel.endsWith('.lvdash.json')) return 'lvdash';
@@ -150,7 +168,9 @@ async function cmdConvert(args: Args): Promise<number> {
     throw new UsageError('convert needs a Tableau file, or --tableau-server');
   }
 
-  const outDir = str(args.flags, 'out') ?? 'pack';
+  // Absolute from here on: the store outlives this shell, and a later `deploy --run` from
+  // another directory must find the same files.
+  const outDir = path.resolve(str(args.flags, 'out') ?? 'pack');
   const mapping = await loadMapping(str(args.flags, 'mapping'));
   // Lane selection (spec §8.1 + success criterion 1). `--no-llm` forces the deterministic
   // lane and `--llm` forces the AI-authored one; with neither, the lane follows what is
@@ -217,6 +237,17 @@ async function cmdConvert(args: Args): Promise<number> {
     }
   }
 
+  // The AI lane needs a report container to brief. Find that out before there is a run
+  // row: a row created first and never enqueued would sit in 'queued' until a server
+  // restart's reconcile failed it.
+  let briefing: ReturnType<typeof assembleBriefs> | undefined;
+  if (!deterministic) {
+    briefing = assembleBriefs(parsed, { mapping });
+    if (briefing.briefs.length === 0) {
+      throw new UsageError(`no Tableau report container found in '${source ?? serverUrl}'`);
+    }
+  }
+
   const store = new RunStore(stateDir());
   try {
     const run = store.createRun({
@@ -229,14 +260,7 @@ async function cmdConvert(args: Args): Promise<number> {
       store.updateRun(run.id, { status: 'compiling' });
       const result = convertDeterministic(parsed, { mapping });
       await writePack(outDir, result.files);
-      for (const [rel, content] of result.files) {
-        store.addArtifact(
-          run.id,
-          path.join(outDir, rel),
-          artifactKind(rel),
-          Buffer.byteLength(content, 'utf8'),
-        );
-      }
+      registerPack(store, run.id, outDir, result.files);
       if (args.flags.get('zip') === true) await fs.writeFile(`${outDir}.zip`, zipPack(result.files));
       store.updateRun(run.id, { status: 'succeeded', warnings: result.warnings });
 
@@ -265,12 +289,14 @@ async function cmdConvert(args: Args): Promise<number> {
     // directory.
     const baseline = convertDeterministic(parsed, { mapping });
     await writePack(outDir, baseline.files);
+    // Recorded like the deterministic lane's files: without rows in the store, this run
+    // looks to `deploy --run` and to the web UI like one that produced nothing.
+    registerPack(store, run.id, outDir, baseline.files);
 
-    const { briefs, warnings } = assembleBriefs(parsed, { mapping });
-    if (briefs.length === 0) {
-      throw new UsageError(`no Tableau report container found in '${source}'`);
-    }
-    store.updateRun(run.id, { warnings });
+    const { briefs, warnings } = briefing!;
+    // Both sources of warnings, as the server does: the baseline's own review summary
+    // is part of this run's honesty, not only the brief assembly's.
+    store.updateRun(run.id, { warnings: [...baseline.warnings, ...warnings] });
 
     const forge = new ForgeClient(forgeUrl(args));
     const health = await forge.health();
@@ -304,16 +330,18 @@ async function cmdConvert(args: Args): Promise<number> {
     // the semantic layer, the checklist, the deploy artifacts — is deterministic either way.
     const artifactDir = path.join(outDir, 'authored');
     await fs.mkdir(artifactDir, { recursive: true });
-    await fs.writeFile(
+    await writeArtifact(
+      store,
+      run.id,
       path.join(artifactDir, 'spec.json'),
       `${JSON.stringify(JSON.parse(finished.spec ?? 'null'), null, 2)}\n`,
-      'utf8',
     );
     if (finished.translation) {
-      await fs.writeFile(
+      await writeArtifact(
+        store,
+        run.id,
         path.join(artifactDir, 'translation.json'),
         `${JSON.stringify(JSON.parse(finished.translation), null, 2)}\n`,
-        'utf8',
       );
     }
 
@@ -414,12 +442,18 @@ async function cmdServe(args: Args): Promise<number> {
   if (!Number.isFinite(port)) throw new UsageError('--port must be a number');
 
   const store = new RunStore(stateDir());
-  const app = buildServer({ store, forgeUrl: forgeUrl(args) });
+  const webRoot = resolveWebRoot(path.dirname(fileURLToPath(import.meta.url)));
+  const app = buildServer({ store, forgeUrl: forgeUrl(args), webRoot });
   await app.listen({ port, host: '127.0.0.1' });
+  // Say plainly whether the browser will get the UI or only the API: a server that
+  // answers 404 at / with no explanation looks broken rather than unbuilt.
+  const ui = webRoot
+    ? `UI: http://127.0.0.1:${port}/`
+    : `UI: not built — run 'npm run build -w web' and restart (the API is up at /api)`;
   process.stdout.write(
     `bi-converter listening on http://127.0.0.1:${port}
-` +
-      `State: ${stateDir()}
+${ui}
+State: ${stateDir()}
 Forge: ${forgeUrl(args)}
 `,
   );

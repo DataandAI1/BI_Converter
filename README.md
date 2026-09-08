@@ -13,10 +13,13 @@ Design spec: [`docs/superpowers/specs/2026-09-07-tableau-to-databricks-aibi-mvp-
 
 ```bash
 npm install
-npm run build -w server
+npm run build            # the server, then the web UI into web/dist
 
 # Convert a workbook. No database, no credentials, no network.
 npx bi-converter convert ./sales.twbx --out ./pack
+
+# Or use the browser: serve the UI and the API together, then open the URL it prints.
+npm run serve            # http://127.0.0.1:4123
 ```
 
 That produces, per workbook:
@@ -61,7 +64,15 @@ bi-converter serve [--port 4123]
 ```
 
 `serve` hosts the three-screen web UI (Convert, Run, Artifacts) over the same store the
-CLI uses, so a run started in the browser can be deployed from the terminal.
+CLI uses, so a run started in the browser can be deployed from the terminal. It needs the
+UI built first (`npm run build`); without one it says so at startup and serves the API
+alone. The gear icon in the UI's header opens the LLM provider settings: Anthropic (an API
+key plus a model from the forge's catalog) or a local Ollama server (its URL plus a model
+it has pulled). Those settings live in the forge, so it has to be running to change them.
+
+If the browser ever reports that it cannot reach the server, the process behind `serve`
+has stopped: start it again and reload. During development, `npm run dev:web` serves the
+UI from Vite and proxies `/api` to a server started with `npm run dev:server`.
 
 ## Binding: Tableau names to Unity Catalog names
 
@@ -105,8 +116,9 @@ cd forge && python -m venv .venv && .venv/bin/pip install -e ".[dev]"   # Python
 npm run dev:forge                                                       # port 4126
 ```
 
-Configure a provider at `POST /settings/provider` (Claude, or a local Ollama server), or
-set `ANTHROPIC_API_KEY`.
+Configure a provider from the UI's Settings dialog (the gear icon), at
+`POST /settings/provider` on the forge directly (Claude, or a local Ollama server), or by
+setting `ANTHROPIC_API_KEY` in the forge's environment.
 
 ## Layout
 

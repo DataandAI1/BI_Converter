@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, fileToBase64, type Artifact, type Health, type Run } from './api';
+import {
+  api,
+  fileToBase64,
+  type Artifact,
+  type Health,
+  type OllamaModel,
+  type Provider,
+  type Run,
+  type SettingsResponse,
+} from './api';
 
 /**
  * Three screens (spec §8.2): Convert, Run, Artifacts.
@@ -16,10 +25,27 @@ const ACTIVE = new Set(['queued', 'extracting', 'authoring', 'compiling']);
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'convert' });
   const [health, setHealth] = useState<Health | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // The one check every screen depends on. A server that cannot be reached is said so
+  // at the top of the page, once, rather than discovered one failed click at a time.
+  const refreshHealth = useCallback(() => {
+    api
+      .health()
+      .then((h) => {
+        setHealth(h);
+        setHealthError(null);
+      })
+      .catch((err) => {
+        setHealth(null);
+        setHealthError(err instanceof Error ? err.message : String(err));
+      });
+  }, []);
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(null));
-  }, []);
+    refreshHealth();
+  }, [refreshHealth]);
 
   return (
     <div className="app">
@@ -40,11 +66,30 @@ export default function App() {
           >
             Runs
           </button>
+          <button
+            className="icon"
+            aria-label="Settings"
+            title="LLM provider settings"
+            aria-haspopup="dialog"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <GearIcon />
+          </button>
         </nav>
       </header>
 
+      {healthError && <div className="error">{healthError}</div>}
+
+      {settingsOpen && (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} onSaved={refreshHealth} />
+      )}
+
       {screen.name === 'convert' && (
-        <ConvertScreen health={health} onStarted={(id) => setScreen({ name: 'run', id })} />
+        <ConvertScreen
+          health={health}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onStarted={(id) => setScreen({ name: 'run', id })}
+        />
       )}
       {screen.name === 'run' && (
         <RunScreen
@@ -64,9 +109,11 @@ export default function App() {
 
 function ConvertScreen({
   health,
+  onOpenSettings,
   onStarted,
 }: {
   health: Health | null;
+  onOpenSettings: () => void;
   onStarted: (id: string) => void;
 }) {
   const [sourceKind, setSourceKind] = useState<'file' | 'server'>('file');
@@ -79,11 +126,14 @@ function ConvertScreen({
   const [error, setError] = useState<string | null>(null);
 
   const forgeDown = health != null && !health.forge.ok;
+  // The forge is up but has no provider it can call: same outcome, different remedy.
+  const llmUnconfigured = health != null && health.forge.ok && !health.llm.ready;
+  const llmUnavailable = forgeDown || llmUnconfigured;
   // Never offer a lane that cannot run: a submit that fails on a server the user was told
   // nothing about is worse than a disabled control that says why.
   useEffect(() => {
-    if (forgeDown && lane === 'llm') setLane('deterministic');
-  }, [forgeDown, lane]);
+    if (llmUnavailable && lane === 'llm') setLane('deterministic');
+  }, [llmUnavailable, lane]);
 
   const ready =
     sourceKind === 'file' ? file != null : live.server.trim() !== '' && live.patName.trim() !== '';
@@ -135,6 +185,16 @@ function ConvertScreen({
           AI-authored lane is unavailable. Start it with{' '}
           <span className="mono">npm run dev:forge</span>. The deterministic lane needs no forge
           and no API key.
+        </div>
+      )}
+      {llmUnconfigured && (
+        <div className="notice">
+          The forge is running but has no LLM provider to call, so the AI-authored lane is
+          unavailable.{' '}
+          <button type="button" className="link" onClick={onOpenSettings}>
+            Open Settings
+          </button>{' '}
+          to add an Anthropic API key or point it at an Ollama server.
         </div>
       )}
 
@@ -249,14 +309,20 @@ function ConvertScreen({
             role="radio"
             aria-checked={lane === 'llm'}
             aria-pressed={lane === 'llm'}
-            disabled={forgeDown}
+            disabled={llmUnavailable}
             onClick={() => setLane('llm')}
           >
             <strong>AI-authored</strong>
             <em>
               {forgeDown
                 ? 'Needs the forge running.'
-                : 'Higher layout fidelity. Takes minutes; the deterministic pack is written first either way.'}
+                : llmUnconfigured
+                  ? 'Needs an LLM provider — see Settings.'
+                  : `Higher layout fidelity. Takes minutes; the deterministic pack is written first either way.${
+                      health?.llm.model
+                        ? ` Uses ${health.llm.model} via ${health.llm.provider === 'ollama' ? 'Ollama' : 'Anthropic'}.`
+                        : ''
+                    }`}
             </em>
           </button>
         </div>
@@ -488,10 +554,20 @@ function ArtifactsScreen({ id, onBack }: { id: string; onBack: (id: string) => v
 
   useEffect(() => {
     if (!selected) return;
+    // A slower earlier request must not land after a faster later one and show file A's
+    // text under file B's highlighted row.
+    let stale = false;
     fetch(api.artifactUrl(selected.id))
       .then((r) => r.text())
-      .then(setContent)
-      .catch(() => setContent('(could not read that file)'));
+      .then((text) => {
+        if (!stale) setContent(text);
+      })
+      .catch(() => {
+        if (!stale) setContent('(could not read that file)');
+      });
+    return () => {
+      stale = true;
+    };
   }, [selected]);
 
   async function runDeploy() {
@@ -605,5 +681,308 @@ function ArtifactsScreen({ id, onBack }: { id: string; onBack: (id: string) => v
         </button>
       </div>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ settings */
+
+function GearIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
+  );
+}
+
+const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
+
+/**
+ * LLM provider settings: Anthropic (an API key and a model from the forge's catalog) or a
+ * local Ollama server (a URL and a model it has pulled). The forge owns and persists the
+ * configuration; this dialog is the way to it from the browser. A key typed here goes to
+ * the forge once and is only ever shown back masked.
+ */
+function SettingsDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [loaded, setLoaded] = useState<SettingsResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [provider, setProvider] = useState<Provider>('claude');
+  const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState('');
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_OLLAMA_URL);
+  const [ollamaModel, setOllamaModel] = useState('');
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+  const [ollamaStatus, setOllamaStatus] = useState<
+    { kind: 'idle' | 'loading' | 'ok' } | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .settings()
+      .then((r) => {
+        setLoaded(r);
+        if (r.settings) {
+          setProvider(r.settings.provider);
+          setModel(r.settings.model);
+          setOllamaBaseUrl(r.settings.ollama_base_url || DEFAULT_OLLAMA_URL);
+          setOllamaModel(r.settings.ollama_model);
+        }
+      })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const loadOllamaModels = useCallback(async (baseUrl: string) => {
+    setOllamaStatus({ kind: 'loading' });
+    try {
+      const r = await api.ollamaModels(baseUrl);
+      setOllamaModels(r.models);
+      setOllamaStatus({ kind: 'ok' });
+      // Nothing chosen yet: the first pulled model is a better default than a blank.
+      setOllamaModel((current) => current || r.models[0]?.name || '');
+    } catch (err) {
+      setOllamaModels([]);
+      setOllamaStatus({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  // List what the Ollama server has as soon as it is the chosen provider. Edits to the
+  // URL do not refetch on every keystroke — the Refresh button does that on purpose.
+  const settings = loaded?.settings ?? null;
+  useEffect(() => {
+    if (settings && provider === 'ollama') {
+      void loadOllamaModels(settings.ollama_base_url || DEFAULT_OLLAMA_URL);
+    }
+  }, [settings, provider, loadOllamaModels]);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api.saveSettings(
+        provider === 'claude'
+          ? { provider, apiKey: apiKey.trim() || undefined, model: model || undefined }
+          : { provider, ollamaBaseUrl: ollamaBaseUrl.trim(), ollamaModel: ollamaModel || undefined },
+      );
+      setLoaded(res);
+      setApiKey('');
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clearKey() {
+    setError(null);
+    try {
+      setLoaded(await api.clearApiKey());
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const keyConfigured = settings?.api_key_configured ?? false;
+  const ollamaOptions = ollamaModels.map((m) => m.name);
+  // The configured model may not be on the server the dialog just asked (a different
+  // host, or not pulled yet). Keep it selectable rather than silently switching.
+  const ollamaMissing = ollamaModel !== '' && !ollamaOptions.includes(ollamaModel);
+
+  return (
+    <div className="backdrop" onClick={onClose}>
+      <div
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="row" style={{ marginBottom: 4 }}>
+          <h2 id="settings-title" style={{ marginRight: 'auto' }}>
+            LLM provider
+          </h2>
+          <button type="button" className="ghost" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <p className="hint">
+          The AI-authored lane sends each rebuild brief to this provider. The forge stores
+          these settings next to its artifacts, so they survive restarts. A key is shown back
+          masked, never in full.
+        </p>
+
+        {loadError && <div className="error">{loadError}</div>}
+        {!loadError && !loaded && <p className="muted">Loading…</p>}
+        {loaded && !loaded.forge.ok && (
+          <div className="notice">
+            The forge is not running at <span className="mono">{loaded.forge.url}</span>, so
+            there is nothing to configure yet. Start it with{' '}
+            <span className="mono">npm run dev:forge</span> and reopen Settings.
+          </div>
+        )}
+
+        {settings && (
+          <>
+            <div className="field" role="radiogroup" aria-label="Provider">
+              <span className="field-label">Provider</span>
+              <div className="lanes">
+                <button
+                  type="button"
+                  className="lane"
+                  role="radio"
+                  aria-checked={provider === 'claude'}
+                  aria-pressed={provider === 'claude'}
+                  onClick={() => setProvider('claude')}
+                >
+                  <strong>Anthropic</strong>
+                  <em>Claude via the Anthropic API. Needs an API key.</em>
+                </button>
+                <button
+                  type="button"
+                  className="lane"
+                  role="radio"
+                  aria-checked={provider === 'ollama'}
+                  aria-pressed={provider === 'ollama'}
+                  onClick={() => setProvider('ollama')}
+                >
+                  <strong>Ollama</strong>
+                  <em>A local model server. No key; nothing leaves the machine.</em>
+                </button>
+              </div>
+            </div>
+
+            {provider === 'claude' ? (
+              <>
+                <label className="field">
+                  <span>
+                    Anthropic API key{' '}
+                    {keyConfigured ? (
+                      <span className="muted">
+                        (currently <span className="mono">{settings.api_key_masked}</span>
+                        {settings.api_key_source === 'env' ? ', from the forge environment' : ''}
+                        {' — leave blank to keep it)'}
+                      </span>
+                    ) : (
+                      <span className="muted">(none configured)</span>
+                    )}
+                  </span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={apiKey}
+                    placeholder={keyConfigured ? 'leave blank to keep the current key' : 'sk-ant-…'}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
+                </label>
+                {settings.api_key_source === 'runtime' && (
+                  <p className="hint">
+                    <button type="button" className="link" onClick={() => void clearKey()}>
+                      Clear the saved key
+                    </button>
+                  </p>
+                )}
+                <label className="field">
+                  <span>Model</span>
+                  <select value={model} onChange={(e) => setModel(e.target.value)}>
+                    {settings.available_models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} — {m.description}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="field">
+                  <span>Ollama server URL</span>
+                  <div className="row">
+                    <input
+                      type="text"
+                      value={ollamaBaseUrl}
+                      placeholder={DEFAULT_OLLAMA_URL}
+                      onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={ollamaStatus.kind === 'loading'}
+                      onClick={() => void loadOllamaModels(ollamaBaseUrl.trim() || DEFAULT_OLLAMA_URL)}
+                    >
+                      {ollamaStatus.kind === 'loading' ? 'Checking…' : 'Refresh models'}
+                    </button>
+                  </div>
+                </label>
+                {ollamaStatus.kind === 'error' && <div className="notice">{ollamaStatus.message}</div>}
+                <label className="field">
+                  <span>
+                    Model{' '}
+                    <span className="muted">
+                      {ollamaStatus.kind === 'ok'
+                        ? ollamaModels.length === 0
+                          ? '(that server has no models — run ollama pull <model>)'
+                          : `(${ollamaModels.length} pulled on that server)`
+                        : ''}
+                    </span>
+                  </span>
+                  <select
+                    value={ollamaModel}
+                    disabled={ollamaOptions.length === 0 && !ollamaMissing}
+                    onChange={(e) => setOllamaModel(e.target.value)}
+                  >
+                    {ollamaMissing && (
+                      <option value={ollamaModel}>{ollamaModel} — not pulled on that server</option>
+                    )}
+                    {ollamaModels.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}
+                        {m.parameterSize ? ` — ${m.parameterSize}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+
+            {error && <div className="error">{error}</div>}
+            <div className="row">
+              <button type="button" className="primary" disabled={saving} onClick={() => void save()}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button type="button" className="ghost" onClick={onClose}>
+                Cancel
+              </button>
+              <span className="muted" style={{ marginLeft: 'auto', fontSize: 13 }}>
+                {settings.llm_ready
+                  ? `Ready: ${settings.provider === 'ollama' ? settings.ollama_model : settings.model}`
+                  : 'Not ready — Anthropic needs an API key'}
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
